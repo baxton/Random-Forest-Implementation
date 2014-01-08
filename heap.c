@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <string.h>
 
@@ -146,7 +145,7 @@ int main() {
     printf("Printing heap: %d items\n", heap_size(h));
     while (heap_size(h)) {
         struct heap_node* n = heap_top(h);
-        printf("%d %s\n", n->key, (const char*)n->data);
+        printf("%5.2f %s\n", n->key, (const char*)n->data);
         heap_pop(h);
     }
 

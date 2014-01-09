@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <string.h>
 
@@ -55,16 +56,41 @@ int heap_capacity(struct heap* h) {
     return h->size;
 }
 
-void heap_add(struct heap* h, double key, void* data) {
-    if (h->num_items == h->size)
-        return;
+int heap_get_node_by_value(struct heap* h, double key, void* data) {
+    long len = heap_size(h);
+    for (int i = 0; i < len; ++i) {
+        struct heap_node* n = &h->array[i];
+        if (n->data == data) {
+            return i;
+        }
+    }
 
-    struct heap_node* n = &h->array[h->num_items];
+    return -1;
+}
+
+void heap_add(struct heap* h, double key, void* data) {
+    struct heap_node* n;
+    long idx = heap_get_node_by_value(h, key, data);
+    if (idx < 0) {
+        if (h->num_items == h->size) {
+            if (key > heap_top(h)->key)
+                heap_pop(h);
+            else
+                return;
+        }
+
+        idx = h->num_items;
+        ++h->num_items;
+        n = &h->array[idx];
+    }else{
+        n = &h->array[idx];
+        if (key <= n->key)
+            return;
+    }
+
     n->key = key;
     n->data = data;
-    ++h->num_items;
 
-    int idx = h->num_items - 1;
     int parent = get_parent(idx);
 
     while (0 <= parent && h->array[parent].key > n->key) {
@@ -132,7 +158,7 @@ void heap_pop(struct heap* h) {
 
 int main() {
 
-    printf("Constructin heap\n");
+    printf("Constructing heap\n");
     struct heap* h = allocate_heap(5);
     heap_add(h, 5, "maxim");
     heap_add(h, 4, "elya");
@@ -145,7 +171,24 @@ int main() {
     printf("Printing heap: %d items\n", heap_size(h));
     while (heap_size(h)) {
         struct heap_node* n = heap_top(h);
-        printf("%5.2f %s\n", n->key, (const char*)n->data);
+        printf("%f %s\n", n->key, (const char*)n->data);
+        heap_pop(h);
+    }
+
+    free_heap(h);
+
+    //
+    h = allocate_heap(5);
+    heap_add(h, 0.45, (void*)25);
+    heap_add(h, 0.41, (void*)22);
+    heap_add(h, 0.42, (void*)40033);
+    heap_add(h, 0.47, (void*)38919);
+    heap_add(h, 0.47, (void*)2215);
+
+    printf("Printing heap: %d items\n", heap_size(h));
+    while (heap_size(h)) {
+        struct heap_node* n = heap_top(h);
+        printf("%f %d\n", n->key, (int)n->data);
         heap_pop(h);
     }
 
@@ -155,5 +198,7 @@ int main() {
 }
 
 #endif
+
+
 
 

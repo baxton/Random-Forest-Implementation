@@ -289,7 +289,7 @@ struct distance {
 };
 
 bool operator< (const distance& cd1, const distance& cd2) {
-    return cd1.dist < cd2.dist;
+    return cd1.id < cd2.id;
 }
 
 
@@ -302,10 +302,31 @@ float predict(const vector<float>& train, vector<float>& vec, int w) {
 
 
     float dist_to_1 = DTWDistance(&initial_vec[X_IDX], &vec[X_IDX], w);
+    float delta = 50.;
+    float LOW = dist_to_1 - delta;
+    float HIGH = dist_to_1 + delta;
+
+    set<distance> visited;
 
 
     float min_dist = numeric_limits<float>::infinity();
     int min_idx = -1;
+
+    while (min_dist == numeric_limits<float>::infinity() && LOW > 0.) {
+
+        for (int i = 1; i < N; ++i) {
+            set<distance>::iterator it = visited.find(i);
+            if (visited.end() == it) {
+            }
+            else {
+            }
+
+                float dist = DTWDistance(&train[i * VEC_LEN + X_IDX], &vec[X_IDX + 0], w);
+        }
+    }
+
+
+
 
     for (int i = 1; i < N; ++i) {
 

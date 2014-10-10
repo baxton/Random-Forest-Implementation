@@ -1,33 +1,67 @@
 
 
 import os
+import sys
 import array
 import numpy as np
 import scipy as sp
 import scipy.io as sio
 
 
-subdirs = ['Dog_1', 'Dog_2', 'Dog_3', 'Dog_4', 'Dog_5']
+
+#subdirs = ['Dog_1', 'Dog_2', 'Dog_3', 'Dog_4', 'Dog_5']
+subdirs = ['Dog_1']
+
+#subdirs = ['Patient_1', 'Patient_2']
 
 path = "C:\\Temp\\kaggle\\epilepsy\\data\\"
-path_out = "C:\\Temp\\kaggle\\epilepsy\\data\\"
+path_out = "C:\\Temp\\kaggle\\epilepsy\\data\\prepared\\"
 
 interictal_prefix = "interictal_segment"
 preictal_prefix = "preictal_segment"
 test_prefix = "test_segment"
 
-fname_train = "dog_train_2.bin"
-fname_cross_test = "dog_cross_test_2.bin"
+fname_train = "dog_train"
+fname_cross_test = "dog_cross_test"
+fname_test = "dog_test"
 
 
-STEP = 1000
-FRAME_LEN_SEC = 600
-FRAME_FROM_SEQ = 1
 
 PART_FOR_TEST = .3
 
 PREICTAL_CLS = 1
 INTERICTAL_CLS = 0
+
+
+
+X_LEN = 10000
+VEC_LEN = X_LEN + 1
+
+
+
+DTW = sp.zeros((VEC_LEN, VEC_LEN ), dtype=np.float)
+
+
+def DTWDistance(s1, s2,w):
+
+    w = max(w, abs(len(s1)-len(s2)))
+
+    DTW.fill(float('inf'))
+    DTW[0,0] = 0
+
+    for i in range(len(s1)):
+        for j in range(max(0, i-w), min(len(s2), i+w)):
+            dist= (s1[i]-s2[j])**2
+
+            dtwI = i + 1
+            dtwJ = j + 1
+
+            DTW[dtwI, dtwJ] = dist + min(DTW[dtwI-1,dtwJ], DTW[dtwI,dtwJ-1], DTW[dtwI-1,dtwJ-1])
+
+    return sp.sqrt(DTW[len(s1), len(s2)])
+
+
+
 
 
 def get_files(path):
@@ -36,6 +70,8 @@ def get_files(path):
     test_files = [path + f for f in os.listdir(path) if test_prefix in f]
 
     return interictal_files, preictal_files, test_files
+
+
 
 
 
@@ -49,15 +85,10 @@ def get_k_of_n(k, low, high):
 
 
 
-def write_txt(fout, vec, cls):
-    fout.write("%d," % cls)
-    for n in vec:
-        fout.write("%d," % n)
-    fout.write("\r\n")
-
-
-def write(fout, vec, cls):
+def write(fout, vec, cls, distance_to_1, distance_to_2):
     a = array.array('d')    # unsigned short
+    a.append(distance_to_1)
+    a.append(distance_to_2)
     a.append(cls)
     a.extend(vec)
     a.tofile(fout)
@@ -81,140 +112,157 @@ def get_data_matrix(f, key_word):
 
 
 
-def get_trand(vec, m):
-    fm = float(m)
-    wsum = vec[:m].sum()
-    num = vec.shape[0] - m + 1
 
-    result = sp.zeros((num, ), dtype=float)
-    result[0] = wsum / fm
 
-    for i in range(1, num):
-        wsum -= vec[i - 1]
-        wsum += vec[i + m - 1]
-        result[i] = wsum / fm
+def normalize(vec):
+    m = vec.mean()
+    max_v = vec.max()
+    min_v = vec.min()
 
-    return result
+    vec -= m
+    vec /= (max_v - min_v)
 
 
 
-def decompose(vec):
-    L = vec.shape[0]
 
-    m = int(L / 10)
-    T = get_trand(vec, m)
 
-    tmp = vec[m-1:] - T
 
-    m = int(399 * 1.)
-    S = get_trand(tmp, m)
 
-    R = tmp[m-1:] - S
 
-    return T, S, R
+
+
+
+
 
 
 def prepare_vector(ORIG):
-    ORIG = ORIG[1:] - ORIG[0:-1]
+    N = ORIG.shape[0]
+    bags = 10000
+    bag_size = N / bags
 
-    T, S, R = decompose(ORIG)
-    #T, S, R = decompose(S)
+    vec = sp.zeros((bags,))
 
-    L = S.shape[0]
+    for i in range(bags):
+        vec[i] = ORIG[i:i+bag_size].mean()
 
-    chunks = 10
-    chunk_len = L / chunks
-    result = sp.zeros((chunks,), dtype=float)
-
-    for c in range(10):
-        s = c * chunk_len
-        e = s + chunk_len
-        result[c] = S[s:e].mean()
-
-    return result
+    return vec
 
 
-# V2 - full vector of positive parts with averaging every 2K nums
-def process_train_data_v2(interictal_files, preictal_files, fout, fout_test):
 
-    length = int(len(interictal_files) * (1. - PART_FOR_TEST))
-    interictal_for_train_indices = get_k_of_n(length, 0, len(interictal_files))
 
-    length = int(len(preictal_files) * (1. - PART_FOR_TEST))
-    preictal_for_train_indices = get_k_of_n(length, 0, len(preictal_files))
 
-    VEC_LEN = 0;
 
-    idx = 0
-    for f in interictal_files:
-        print "Processing: ", f, "for train" if idx in interictal_for_train_indices else "for test"
+
+def start(dir_name):
+    with open(path_out + fname_train + "_" + dir_name, "wb+") as fout:
+        with open(path_out + fname_cross_test + "_" + dir_name, "wb+") as fout_test:
+            with open(path_out + fname_test + "_" + dir_name, "wb+") as fout_sub:
+                full_path = path + dir_name + "\\"
+                if os.path.exists(full_path):
+                    interictal_files, preictal_files, test_files = get_files(full_path)
+                    process(interictal_files, preictal_files, test_files, fout, fout_test, fout_sub, dir_name)
+
+
+def process(interictal_files, preictal_files, sub_files, fout, fout_test, fout_sub, dir_name):
+
+    log = open(path + dir_name + ".log", "w+")
+
+    log.write("Start processing: %s%s" % (dir_name, os.linesep))
+
+    # balance
+    LI = len(interictal_files)
+    LP = len(preictal_files)
+
+    L = min(LP, LI)
+    LEN_TRAIN = int(float(L) * (1. - PART_FOR_TEST))
+    LEN_TEST = L - LEN_TRAIN
+
+    log.write("for train: %d; for test: %d%s" % (LEN_TRAIN, LEN_TEST, os.linesep))
+
+    # define indices for train
+    interictal_indices = get_k_of_n(L, 0, LI)
+    preictal_indices = get_k_of_n(L, 0, LP)
+
+    dot_1 = sp.zeros((X_LEN,))
+    dot_2 = sp.zeros((X_LEN,))
+    dot_2 += 5000
+
+    #
+    VEC_LEN = -1
+
+    # interictal
+    for idx in range(L):
+        f = interictal_files[interictal_indices[idx]]
+        log.write("Processing: %s%s" % (f, os.linesep))
+        log.flush()
 
         data_matrix, freq, sensors, length = get_data_matrix(f, 'interictal')
-
         for s in range(sensors):
-            a = prepare_vector(np.array(data_matrix[s], dtype=int))
-
-            if VEC_LEN == 0:
+            try:
+                a = prepare_vector(np.array(data_matrix[s], dtype=float))
                 VEC_LEN = a.shape[0]
-                print VEC_LEN
-            else:
-                if VEC_LEN != a.shape[0]:
-                    print "ERROR: vec length %d vs %d" % (VEC_LEN, a.shape[0])
-                    a = a[:VEC_LEN]
 
-            if idx in interictal_for_train_indices:
-                write(fout, a, INTERICTAL_CLS)
-            else:
-                write(fout_test, a, INTERICTAL_CLS)
-        idx += 1
+                if idx < LEN_TRAIN:
+                    write(fout, a, INTERICTAL_CLS, DTWDistance(dot_1, a, 3), DTWDistance(dot_2, a, 3))
+                else:
+                    write(fout_test, a, INTERICTAL_CLS, DTWDistance(dot_1, a, 3), DTWDistance(dot_2, a, 3))
+                a = None
+            except Exception as ex:
+                log.write("ERR: vector was not prepared for sensor %d%s: %s" % (s, os.linesep, ex.message))
+        # end for sensors
     # end interictals
 
-
-    idx = 0
-    for f in preictal_files:
-        print "Processing: ", f, "for train" if idx in preictal_for_train_indices else "for test"
+    # preictal
+    for idx in range(L):
+        f = preictal_files[preictal_indices[idx]]
+        log.write("Processing: %s%s" % (f, os.linesep))
+        log.flush()
 
         data_matrix, freq, sensors, length = get_data_matrix(f, 'preictal')
 
         for s in range(sensors):
-            a = prepare_vector(np.array(data_matrix[s], dtype=int))
+            try:
+                a = prepare_vector(np.array(data_matrix[s], dtype=float))
 
-            if VEC_LEN == 0:
-                VEC_LEN = a.shape[0]
-            else:
-                if VEC_LEN != a.shape[0]:
-                    print "ERROR: vec length %d vs %d" % (VEC_LEN, a.shape[0])
-                    if VEC_LEN < a.shape[0]:
-                        a = a[:VEC_LEN]
-                    else:
-                        tmp = sp.zeros((VEC_LEN))
-                        tmp[:a.shape[0]] = a
-                        a = tmp
-
-            if idx in interictal_for_train_indices:
-                write(fout, a, PREICTAL_CLS)
-            else:
-                write(fout_test, a, PREICTAL_CLS)
-        idx += 1
+                if idx < LEN_TRAIN:
+                    write(fout, a, PREICTAL_CLS, DTWDistance(dot_1, a, 3), DTWDistance(dot_2, a, 3))
+                else:
+                    write(fout_test, a, PREICTAL_CLS, DTWDistance(dot_1, a, 3), DTWDistance(dot_2, a, 3))
+                a = None
+            except:
+                log.write("ERR: vector was not prepared for sensor %d%s: %s" % (s, os.linesep, ex.message))
+        # end of for sensors
     # end of preictal
 
-    print "DONE", "Vec length: %d" % VEC_LEN
+    # test
+##    initial_vec = None
+##    for f in sub_files:
+##        log.write("Processing: %s%s" % (f, os.linesep))
+##        log.flush()
+##
+##        data_matrix, freq, sensors, length = get_data_matrix(f, 'test_segment')
+##
+##        for s in range(sensors):
+##            try:
+##                a = prepare_vector(np.array(data_matrix[s], dtype=float))
+##
+##                write(fout_sub, a, -1., -1.)
+##                a = None
+##            except:
+##                log.write("ERR: vector was not prepared for sensor %d%s: %s" % (s, os.linesep, ex.message))
+##        # end of for sensors
+##    # end of preictal
+
+    log.write("DONE, vec len %d%s" % (VEC_LEN, os.linesep))
 
 
 
 
 def main():
-
-    with open(path_out + fname_train, "wb+") as fout:
-        with open(path_out + fname_cross_test, "wb+") as fout_test:
-            for subd in subdirs:
-                full_path = path + subd + "\\"
-                if os.path.exists(full_path):
-                    interictal_files, preictal_files, test_files = get_files(full_path)
-                    #print '\n'.join(preictal_files)
-                    #
-                    process_train_data_v2(interictal_files, preictal_files, fout, fout_test)
-
+    #if TEST:
+    for subd in subdirs:
+        start(subd)
+#        break
 
 if __name__ == '__main__':
     main()

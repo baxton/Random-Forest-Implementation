@@ -14,11 +14,11 @@ import files
 import features
 
 
-#DLL = ctypes.cdll.LoadLibrary("C:\\Temp\\kaggle\\epilepsy\\scripts\\dtw_fast.dll")
+DLL = ctypes.cdll.LoadLibrary("C:\\Temp\\kaggle\\epilepsy\\scripts\\sub1\\dtw_fast.dll")
 
 
 path = "C:\\Temp\\kaggle\\epilepsy\\data\\"
-path_train = path + "prepared_sub3\\"
+path_train = path + "prepared_sub1\\"
 
 
 interictal_prefix = "interictal_segment"
@@ -28,26 +28,22 @@ preictal_prefix = "preictal_segment"
 PREICTAL_CLS = 1
 INTERICTAL_CLS = 0
 
-# I only need 10 files for train set
-NUM_FOR_TRAIN = 200
-
-
 X_LEN = features.X_LEN
 
-#dot_1 = sp.zeros((X_LEN,), dtype=np.float32)
-#dot_2 = sp.zeros((X_LEN,), dtype=np.float32)
-#dot_2 += 5000.
+dot_1 = sp.zeros((X_LEN,), dtype=np.float32)
+dot_2 = sp.zeros((X_LEN,), dtype=np.float32)
+dot_2 += 5000.
 
-#W=500
-
-
+W=500
 
 
 
-#def DTWDistance(s1, s2, w):
-#    res = ctypes.c_float(0.)
-#    DLL.DTWDistance(s1.ctypes.data, s2.ctypes.data, ctypes.c_int(w), ctypes.addressof(res))
-#    return res.value
+
+
+def DTWDistance(s1, s2, w, giveup_threshold = float('inf')):
+    res = ctypes.c_float(0.)
+    code = DLL.DTWDistance(s1.ctypes.data, s2.ctypes.data, ctypes.c_int(w), ctypes.c_float(giveup_threshold), ctypes.addressof(res))
+    return res.value, code
 
 
 
@@ -57,11 +53,6 @@ def dbg(log_out, msg):
     log_out.flush()
 
 
-
-def get_files(path):
-    interictal_files = [path + f for f in os.listdir(path) if interictal_prefix in f]
-    preictal_files = [path + f for f in os.listdir(path) if preictal_prefix in f]
-    return interictal_files, preictal_files
 
 
 def get_k_of_n(k, low, high):
@@ -74,13 +65,17 @@ def get_k_of_n(k, low, high):
 
 
 
-def write(fout, cls, features):
+def write(fout, cls, features, dist1, dist2):
     a = array.array('d')    # double
     a.append(cls)
+    a.append(dist1)
+    a.append(dist2)
     a.extend(features)
     a.tofile(fout)
     fout.flush()
 
+    a = None
+# END of write
 
 
 
@@ -95,8 +90,8 @@ def get_data_matrix(f, key_word):
     length = data['data'][0,0].shape[1]
     length_sec = data['data_length_sec'][0][0][0][0]
 
-    return data['data'][0,0].astype(np.float32), freq, sensors, length
-
+    return data['data'][0,0], freq, sensors, length
+# END of get_data_matrix
 
 
 
@@ -107,7 +102,7 @@ def get_data_matrix(f, key_word):
 
 def process():
 
-    log = open(path + "..\\logs\\prepare_train.sub3.log", "w+")
+    log = open(path + "..\\logs\\prepare_train.sub1.log", "w+")
 
 
     #########################################################
@@ -119,30 +114,53 @@ def process():
 
     #########################################################
 
-    fname_train = path_train + "full_train.b"
+    fn_cnt = 0
+    fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+    fn_cnt += 1
 
     cnt = 0
 
-    with open(fname_train, "wb+") as fout:
+    #with open(fname_train, "wb+") as fout:
+    if True:
+        fout = open(fname_train, "wb+")
+
         for i in train_ii_indices:
             cnt += 1
             fn = files.INTERICTAL_FILES[ i ]
             data_matrix, freq, sensors, length = get_data_matrix(fn, 'interictal')
             for s in range(sensors):
-                write(fout, INTERICTAL_CLS, features.extract_features(data_matrix[s]))
+                #vec = features.extract_features(data_matrix[s])
+                vec = features.DV(data_matrix[s], X_LEN)
+                dist1, code = DTWDistance(dot_1, vec, W)
+                dist2, code = DTWDistance(dot_2, vec, W)
+                write(fout, INTERICTAL_CLS, vec, dist1, dist2)
 
-            if (cnt % 20) == 0:
+            if (cnt % 10) == 0:
                 dbg(log, "currently processed %d files" % cnt)
+
+                fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+                fn_cnt += 1
+                fout.close()
+                fout = open(fname_train, "wb+")
 
         for i in train_pi_indices:
             cnt += 1
             fn = files.PREICTAL_FILES[ i ]
             data_matrix, freq, sensors, length = get_data_matrix(fn, 'preictal')
             for s in range(sensors):
-                write(fout, PREICTAL_CLS, features.extract_features(data_matrix[s]))
+                #vec = features.extract_features(data_matrix[s])
+                vec = features.DV(data_matrix[s], X_LEN)
+                dist1, code = DTWDistance(dot_1, vec, W)
+                dist2, code = DTWDistance(dot_2, vec, W)
+                write(fout, PREICTAL_CLS, vec, dist1, dist2)
 
-            if (cnt % 20) == 0:
+            if (cnt % 10) == 0:
                 dbg(log, "currently processed %d files" % cnt)
+
+                fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+                fn_cnt += 1
+                fout.close()
+                fout = open(fname_train, "wb+")
 
     dbg(log, "DONE, %d files" % cnt)
 

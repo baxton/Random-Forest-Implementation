@@ -2,6 +2,7 @@
 
 //
 // g++ cls_node.cpp -o cls_node.exe
+// g++ cls_node.cpp -o cls_node_p.exe
 //
 
 #include <cstdlib>
@@ -14,24 +15,58 @@
 #include <limits>
 #include <set>
 #include <ctime>
+#include <algorithm>
+
 
 using namespace std;
 
 #define X_LEN        10000
-#define VEC_LEN      (X_LEN + 1 + 1)
+#define VEC_LEN      (X_LEN + 1 + 2)
 #define DTW_VEC_LEN  (X_LEN + 1)
 
 #define ALIGNMENT __attribute__((aligned(4)))
 
-#define DIST_IDX 0
-#define CLS_IDX  1
-#define X_IDX    2
+#define CLS_IDX   0
+#define DIST1_IDX 1
+#define DIST2_IDX 2
+#define X_IDX     3
+
+
+// for people
+#define DELTA       500.
+#define MAX_RADIUS  500000.
+
+
+// Model
+const int files_num = 14;
+const char* fnames[files_num] = {
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_0.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_1.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_2.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_3.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_4.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_5.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_6.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_7.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_8.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_9.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_10.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_11.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_12.b",
+    "C:\\Temp\\kaggle\\epilepsy\\data\\prepared_sub1\\full_train_13.b",
+    };
 
 
 
+// Pre-allocated arrays
 float DTW [DTW_VEC_LEN * DTW_VEC_LEN] ALIGNMENT;
 
+float dot_1[X_LEN] ALIGNMENT;
+float dot_2[X_LEN] ALIGNMENT;
 
+
+// DTW window width
+int W = 50;
 
 
 
@@ -39,6 +74,13 @@ float DTW [DTW_VEC_LEN * DTW_VEC_LEN] ALIGNMENT;
 // Lin algebra
 //
 struct linalg {
+
+    static void set(float* __restrict__ v, float scalar, int size) {
+        for (int i = 0; i < size; ++i)
+            v[i] = scalar;
+    }
+
+
 
     static void sub(const float* __restrict__ v1, const float* __restrict__ v2, float* r, int size) {
         for (int i = 0; i < size; ++i) {
@@ -121,7 +163,7 @@ void line2vec(const string& line, vector<T>& vec) {
 
 
 void help();
-bool read_data(vector<float>& data, const string& fname);
+bool read_data(vector<float>& data, const char* fname);
 float predict(const vector<float>& train, vector<float>& vec, int w);
 
 bool equal(float f1, float f2, float e=0.01);
@@ -131,26 +173,33 @@ void fill(float v);
 
 
 
-
-
 int main(int argc, const char** argv) {
 
-    if (2 != argc) {
-        help();
-        return -1;
-    }
-
-    string fname = argv[1];
-    cout << "#train data file " << fname << endl;
+    linalg::set(dot_1, 0.f, X_LEN);
+    linalg::set(dot_2, 5000.f, X_LEN);
+    cout << "#2 dots are ready, size " << X_LEN << endl;
 
 
     vector<float> train;
-    train.reserve(1024 * 1024 * sizeof(float));
+    train.reserve(5 * 1024 * 1024 * sizeof(float));
 
-    if (!read_data(train, fname)) {
-        help();
-        return -1;
+    for (int i = 0; i < files_num; ++i) {
+        if (!read_data(train, fnames[i])) {
+            help();
+            return -1;
+        }
     }
+
+    int N = train.size() / VEC_LEN;
+    int ones = 0;
+    int zeros = 0;
+    for (int i = 0; i < N; ++i) {
+        if (train[i*VEC_LEN + CLS_IDX])
+            ++ones;
+        else
+            ++zeros;
+    }
+    cout << "#STAT: ones " << ones << "; zeros " << zeros << endl;
 
     string name;
 
@@ -175,18 +224,19 @@ int main(int argc, const char** argv) {
             vector<float> tmp;
             line2vec(line, tmp);
 
+            //if (0. == tmp[CLS_IDX])
+            //    continue;
+
+            cout << "#new vector [" << tmp[CLS_IDX] << ", " << tmp[DIST1_IDX] << ", " << tmp[DIST2_IDX] << ", " << tmp[X_IDX+0] << ", " << tmp[X_IDX+1] << ", "
+                 << tmp[X_IDX+2] << ", " << tmp[X_IDX+3] << ", ...]"
+                 << endl;
+
             time_t start = clock();
-            float p = predict(train, tmp, 3);
-
-            //vector<float> trr(VEC_LEN, 0.0);
-            //vector<float> trr2(VEC_LEN, 1000.0);
-            //float p = DTWDistance(&trr[X_IDX], &tmp[X_IDX], 3);
-            //float p2 = DTWDistance(&trr2[X_IDX], &tmp[X_IDX], 3);
-
+            float p = predict(train, tmp, W);
             time_t finish = clock();
-            cout << "#time " << ((float)(finish - start) / CLOCKS_PER_SEC) << endl;
 
             cout << "#" << name << " : " << p << endl;
+            cout << "#time " << ((float)(finish - start) / CLOCKS_PER_SEC) << endl;
         }
 
     }
@@ -195,15 +245,21 @@ int main(int argc, const char** argv) {
     return 0;
 }
 
-float DTWDistance(const float* s1, const float* s2, int w) {
+int DTWDistance(const float* s1, const float* s2, int w, float giveup_threshold, float* ret) {
 
     fill(numeric_limits<float>::infinity());
 
-    DTW[0] = 0.0f;
+    DTW[0] = 0.f;
 
-    for (int i = 0; i < X_LEN; ++i) {
+    bool giveup = false;
+
+    float global_min_dist = numeric_limits<float>::infinity();
+
+    for (int i = 0; i < X_LEN && !giveup; ++i) {
         int begin = (i - w) > 0 ? i - w : 0;
         int end = (i + w) < X_LEN ? i + w : X_LEN;
+
+        float min_dist = numeric_limits<float>::infinity();
 
         for (int j = begin; j < end; ++j) {
 
@@ -217,10 +273,21 @@ float DTWDistance(const float* s1, const float* s2, int w) {
 
             DTW[dtwI * DTW_VEC_LEN + dtwJ] = dist + min;
 
+            if (min_dist > DTW[dtwI * DTW_VEC_LEN + dtwJ]) {
+                min_dist = DTW[dtwI * DTW_VEC_LEN + dtwJ];
+                global_min_dist = min_dist;
+
+                if (min_dist > giveup_threshold) {
+                    giveup = true;
+                    break;
+                }
+            }
         }
     }
 
-    return sqrt( DTW[DTW_VEC_LEN*DTW_VEC_LEN - 1] );
+    *ret = giveup ? global_min_dist : sqrt( DTW[DTW_VEC_LEN*DTW_VEC_LEN - 1] );
+
+    return !giveup;
 }
 
 void fill(float v) {
@@ -253,23 +320,20 @@ bool equal(float f1, float f2, float e) {
 }
 
 void help() {
-    cout << "cls_node - one node of classification\n"
-         << "Usage: cat data.txt | cls_node train_data1.bin | cls_node train_data2.bin > result.txt"
+    cout << "#cls_node - one node of classification\n"
+         << "#Usage: cat data.txt | cls_node train_data1.bin | cls_node train_data2.bin > result.txt"
          << endl;
 }
 
-bool read_data(vector<float>& data, const string& fname) {
+bool read_data(vector<float>& data, const char* fname) {
     try {
         ifstream fin;
-        fin.open(fname.c_str(), ifstream::in | ifstream::binary);
+        fin.open(fname, ifstream::in | ifstream::binary);
 
-        vector<float> tmp;
         double d;
         while (fin.read((char*)&d, sizeof(double))) {
-            tmp.push_back((float)d);
+            data.push_back((float)d);
         }
-
-        data.swap(tmp);
     }
     catch(const std::exception& ex) {
         cout << "#ERROR: [" << ex.what() << "] from " << fname << endl;
@@ -288,60 +352,135 @@ struct distance {
     int id;
 };
 
-bool operator< (const distance& cd1, const distance& cd2) {
+bool operator< (const struct distance& cd1, const struct distance& cd2) {
     return cd1.id < cd2.id;
 }
 
 
 float predict(const vector<float>& train, vector<float>& vec, int w) {
 
+    const int NO_DIST = -1.;
+
     int N = train.size() / VEC_LEN;
     cout << "# number of train rows: " << N << endl;
 
-    float* initial_vec = &train[0];
+    float dist_to_1;
+    float dist_to_2;
+
+    int r = DTWDistance(dot_1, &vec[X_IDX], 500, numeric_limits<float>::infinity(), &dist_to_1);
+        r = DTWDistance(dot_2, &vec[X_IDX], 500, numeric_limits<float>::infinity(), &dist_to_2);
+
+    cout << "#distances: " << dist_to_1 << "; " << dist_to_2 << "; " << endl;
 
 
-    float dist_to_1 = DTWDistance(&initial_vec[X_IDX], &vec[X_IDX], w);
-    float delta = 50.;
-    float LOW = dist_to_1 - delta;
-    float HIGH = dist_to_1 + delta;
+    float delta = DELTA;
+    float LOW1 = (dist_to_1 - delta) > 0.f ? dist_to_1 - delta : 0.f;
+    float HIGH1 = dist_to_1 + delta;
+    float LOW2 = (dist_to_2 - delta) > 0.f ? dist_to_2 - delta : 0.f;
+    float HIGH2 = dist_to_2 + delta;
+    float radius = delta;
 
-    set<distance> visited;
+    //set<struct distance> visited;
+    vector<float> visited(N, numeric_limits<float>::infinity());
 
+    int checked = 0;
+
+    float dtw_giveup_threshold = numeric_limits<float>::infinity();
 
     float min_dist = numeric_limits<float>::infinity();
     int min_idx = -1;
-
-    while (min_dist == numeric_limits<float>::infinity() && LOW > 0.) {
+/*
+    while (min_dist == numeric_limits<float>::infinity() && radius < MAX_RADIUS) {
 
         for (int i = 1; i < N; ++i) {
-            set<distance>::iterator it = visited.find(i);
-            if (visited.end() == it) {
+            if (visited[i] == numeric_limits<float>::infinity() &&
+                (LOW1 <= train[i * VEC_LEN + DIST1_IDX] && train[i * VEC_LEN + DIST1_IDX] <= HIGH1) &&
+                (LOW2 <= train[i * VEC_LEN + DIST2_IDX] && train[i * VEC_LEN + DIST2_IDX] <= HIGH2)) {
+
+                float dist;
+                int r = DTWDistance(&train[i * VEC_LEN + X_IDX], &vec[X_IDX], w, dtw_giveup_threshold, &dist);
+                visited[i] = dist;
+                if (dtw_giveup_threshold > dist)
+                    dtw_giveup_threshold = dist;
+
+                //if (!r)
+                //    cout << "# gave up as threshold is " << dtw_giveup_threshold << " vs " << dist << endl;
+
+                ++checked;
+
+                if (min_dist > dist && dist <= radius) {
+                    min_dist = dist;
+                    min_idx = i;
+                    cout << "# >>" << min_dist << "; cls " << train[min_idx * VEC_LEN + CLS_IDX] << " vs " << vec[CLS_IDX]
+                         << " (" << train[min_idx * VEC_LEN + DIST1_IDX] << "; " << train[min_idx * VEC_LEN + DIST2_IDX] << "; " << ")"
+                         << endl;
+                }
             }
             else {
+                if (visited[i] <= radius && min_dist > visited[i]) {
+                    min_dist = visited[i];
+                    min_idx = i;
+                    cout << "# >>" << min_dist << "; cls " << train[min_idx * VEC_LEN + CLS_IDX] << " vs " << vec[CLS_IDX]
+                         << " (" << train[min_idx * VEC_LEN + DIST1_IDX] << "; " << train[min_idx * VEC_LEN + DIST2_IDX] << "; " << ")"
+                         << endl;
+
+                }
             }
 
-                float dist = DTWDistance(&train[i * VEC_LEN + X_IDX], &vec[X_IDX + 0], w);
+
         }
+
+        radius += delta;
+        LOW1 = (LOW1 - delta) > 0.f ? LOW1 - delta : 0.f;
+        HIGH1 = HIGH1 + delta;
+        LOW2 = (LOW2 - delta) > 0.f ? LOW2 - delta : 0.f;
+        HIGH2 = HIGH2 + delta;
+
+        cout << "#radius: " << radius << "; checked: " << checked << endl;
     }
+*/
+    cout << "#checked: " << checked << endl;
 
+    if (min_dist == numeric_limits<float>::infinity()) {
+        cout << "#full scan" << endl;
 
+        for (int i = 1; i < N; ++i) {
+            float dist = numeric_limits<float>::infinity();
 
+            if (visited[i] == numeric_limits<float>::infinity()) {
+                int r = DTWDistance(&train[i * VEC_LEN + X_IDX], &vec[X_IDX + 0], w, dtw_giveup_threshold, &dist);
+                visited[i] = dist;
+                if (dtw_giveup_threshold > dist)
+                    dtw_giveup_threshold = dist;
 
-    for (int i = 1; i < N; ++i) {
+                if (train[i * VEC_LEN + CLS_IDX] == 1) {
+                    cout << "# ONE dist: " << dist << (r ? "" : " (gave up)") << " distances " << train[i * VEC_LEN + DIST1_IDX] << "; " << train[i * VEC_LEN + DIST2_IDX] << endl;
+                }
 
-        float dist = DTWDistance(&train[i * VEC_LEN + X_IDX], &vec[X_IDX + 0], w);
+                //if (!r)
+                //    cout << "# gave up as threshold is " << dtw_giveup_threshold << " vs " << dist << endl;
 
-        if (min_dist > dist) {
-            min_dist = dist;
-            min_idx = i;
+                ++checked;
+            }
+            else {
+                dist = visited[i];
+            }
 
-            //cout << "# >>" << min_dist << "; cls " << train[min_idx * VEC_LEN + CLS_IDX] << " vs " << vec[CLS_IDX] << endl;
+            if (min_dist > dist) {
+                min_dist = dist;
+                min_idx = i;
+                cout << "# >>" << min_dist << "; cls " << train[min_idx * VEC_LEN + CLS_IDX] << " vs " << vec[CLS_IDX]
+                     << " (" << train[min_idx * VEC_LEN + DIST1_IDX] << "; " << train[min_idx * VEC_LEN + DIST2_IDX] << "; " << ")"
+                     << endl;
+
+            }
+
+            //if (0 == (i % 100)) {
+            //    cout << "# processed " << i << " rows" << endl;
+            //}
         }
 
-        //if (0 == (i % 100)) {
-        //    cout << "# processed " << i << " rows" << endl;
-        //}
+        cout << "#checked: " << checked << endl;
     }
 
     float p = train[min_idx * VEC_LEN + CLS_IDX];

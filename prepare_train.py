@@ -14,11 +14,11 @@ import files
 import features
 
 
-DLL = ctypes.cdll.LoadLibrary("C:\\Temp\\kaggle\\epilepsy\\scripts\\sub1\\dtw_fast.dll")
+DLL = ctypes.cdll.LoadLibrary("C:\\Temp\\kaggle\\epilepsy\\scripts\\sub5\\dtw_fast.dll")
 
 
 path = "C:\\Temp\\kaggle\\epilepsy\\data\\"
-path_train = path + "prepared_sub1\\"
+path_train = path + "prepared_sub5\\"
 
 
 interictal_prefix = "interictal_segment"
@@ -30,13 +30,27 @@ INTERICTAL_CLS = 0
 
 X_LEN = features.X_LEN
 
-dot_1 = sp.zeros((X_LEN,), dtype=np.float32)
-dot_2 = sp.zeros((X_LEN,), dtype=np.float32)
-dot_2 += 5000.
+W=50
 
-W=500
+origin = sp.zeros((X_LEN,), dtype=np.float32)
+gen_mean = None
+ii_mean = None
+pi_mean = None
 
 
+
+
+
+
+
+def load_means():
+    global gen_mean, ii_mean, pi_mean
+    dt = np.float32
+    with open(path_train + "mean_curves.csv", "r") as fin:
+        length = int( fin.readline() )
+        gen_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
+        ii_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
+        pi_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
 
 
 
@@ -65,16 +79,11 @@ def get_k_of_n(k, low, high):
 
 
 
-def write(fout, cls, features, dist1, dist2):
-    a = array.array('d')    # double
-    a.append(cls)
-    a.append(dist1)
-    a.append(dist2)
-    a.extend(features)
-    a.tofile(fout)
+def write(fout, cls, vec, f_id, s_id):
+    to_file = sp.concatenate(([f_id, s_id, cls], vec))
+    to_file.tofile(fout, sep=',')
+    fout.write(os.linesep)
     fout.flush()
-
-    a = None
 # END of write
 
 
@@ -102,20 +111,21 @@ def get_data_matrix(f, key_word):
 
 def process():
 
-    log = open(path + "..\\logs\\prepare_train.sub1.log", "w+")
+    log = open(path + "..\\logs\\prepare_train.sub5.log", "w+")
 
 
     #########################################################
     ## select train files
     #########################################################
 
-    train_ii_indices = [36,48,79,105,161,231,239,371,393,472,502,520,521,532,538,564,579,655,873,925,1107,1406,1606,1613,1618,2073,2142,2150,2307,2414,2511,2526,2661,2728,2752,2923,2970,3072,3107,3191,3302,3340,3367,3384,3524,3610,3611,3613,3647,3653,3676,3679,3683,3684,3701,3710,3713,3714,3719,3720,3729,3734,3739,3740,3743,3745,3748,3753,3757,3758]
-    train_pi_indices = [3766,3771,3773,3778,3782,3783,3784,3785,3786,3788,3799,3801,3803,3805,3806,3807,3813,3815,3818,3822,3833,3836,3844,3849,3864,3877,3884,3895,3899,3903,3907,3912,3917,3921,3958,3964,3969,3982,3994,4000,4001,4005,4007,4010,4013,4014,4016,4017,4025,4030,4032,4034,4036,4037,4039,4040,4042,4043,4045,4048,4050,4052,4053,4054,4057,4059,4061,4063,4064,4066]
-
+    #train_ii_indices = [72,116,203,250,265,328,341,355,436,458,486,526,593,612,613,672,705,795,904,941,1070,1160,1284,1287,1447,1555,1652,2009,2330,2383,2447,2590,2725,2857,2906,2955,2960,3020,3161,3171,3311,3409,3546,3558,3563,3576,3589,3645,3653,3655,3675,3686,3688,3694,3695,3696,3698,3702,3710,3719,3727,3730,3734,3735,3738,3740,3743,3746,3755,3764]
+    #train_pi_indices = [3768,3769,3771,3776,3777,3779,3780,3781,3787,3788,3791,3795,3802,3805,3806,3808,3812,3816,3826,3831,3835,3842,3849,3852,3853,3854,3864,3873,3885,3890,3909,3918,3924,3933,3948,3955,3965,3973,3987,3989,4005,4006,4013,4014,4017,4018,4022,4023,4025,4027,4032,4034,4035,4036,4038,4040,4041,4043,4046,4048,4051,4052,4053,4054,4057,4058,4059,4062,4064,4065]
+    train_ii_indices = [33,44,51,100,145,165,191,194,200,224,251,265,322,326,344,346,366,373,420,441,519,535,545,583,602,605,626,627,630,651,657,700,770,775,776,786,848,896,905,950,999,1038,1134,1137,1195,1539,1554,1606,1676,1691,1779,1861,1880,1891,1968,2002,2109,2174,2321,2347,2475,2484,2528,2581,2591,2764,2781,2804,2855,2903,2979,2983,3027,3036,3038,3072,3139,3144,3161,3192,3237,3241,3245,3269,3270,3293,3305,3318,3368,3393,3411,3431,3452,3453,3482,3531,3554,3605,3647,3667,3677,3678,3681,3685,3686,3690,3697,3699,3700,3701,3703,3704,3705,3707,3708,3710,3714,3715,3718,3720,3724,3728,3729,3730,3732,3733,3735,3736,3738,3744,3748,3749,3752,3754,3756,3757,3758,3760,3761,3762]
+    train_pi_indices = [3768,3770,3771,3772,3776,3778,3779,3781,3786,3789,3795,3800,3801,3805,3806,3809,3815,3823,3824,3829,3841,3848,3855,3864,3869,3871,3880,3885,3894,3903,3905,3915,3917,3926,3928,3930,3972,3977,3995,4000,4001,4005,4012,4018,4021,4022,4023,4024,4027,4028,4031,4033,4035,4036,4037,4041,4042,4043,4046,4047,4049,4050,4052,4053,4055,4056,4062,4063,4065,4066]
     #########################################################
 
     fn_cnt = 0
-    fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+    fname_train = "%strain_%d.csv" % (path_train, fn_cnt)
     fn_cnt += 1
 
     cnt = 0
@@ -129,16 +139,13 @@ def process():
             fn = files.INTERICTAL_FILES[ i ]
             data_matrix, freq, sensors, length = get_data_matrix(fn, 'interictal')
             for s in range(sensors):
-                #vec = features.extract_features(data_matrix[s])
-                vec = features.DV(data_matrix[s], X_LEN)
-                dist1, code = DTWDistance(dot_1, vec, W)
-                dist2, code = DTWDistance(dot_2, vec, W)
-                write(fout, INTERICTAL_CLS, vec, dist1, dist2)
+                vec = features.extract_features( data_matrix[s] )
+                write(fout, INTERICTAL_CLS, vec, i, s)
 
-            if (cnt % 10) == 0:
+            if (cnt % 20) == 0:
                 dbg(log, "currently processed %d files" % cnt)
 
-                fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+                fname_train = "%strain_%d.csv" % (path_train, fn_cnt)
                 fn_cnt += 1
                 fout.close()
                 fout = open(fname_train, "wb+")
@@ -148,16 +155,13 @@ def process():
             fn = files.PREICTAL_FILES[ i ]
             data_matrix, freq, sensors, length = get_data_matrix(fn, 'preictal')
             for s in range(sensors):
-                #vec = features.extract_features(data_matrix[s])
-                vec = features.DV(data_matrix[s], X_LEN)
-                dist1, code = DTWDistance(dot_1, vec, W)
-                dist2, code = DTWDistance(dot_2, vec, W)
-                write(fout, PREICTAL_CLS, vec, dist1, dist2)
+                vec = features.extract_features( data_matrix[s] )
+                write(fout, PREICTAL_CLS, vec, i, s)
 
-            if (cnt % 10) == 0:
+            if (cnt % 20) == 0:
                 dbg(log, "currently processed %d files" % cnt)
 
-                fname_train = "%sDV_train_%d.b " % (path_train, fn_cnt)
+                fname_train = "%strain_%d.csv" % (path_train, fn_cnt)
                 fn_cnt += 1
                 fout.close()
                 fout = open(fname_train, "wb+")
@@ -166,6 +170,7 @@ def process():
 
 
 def main():
+    #load_means()
     process()
 
 

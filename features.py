@@ -3,13 +3,13 @@
 import numpy as np
 import scipy as sp
 import numpy.fft as fft
+from sklearn import preprocessing
 
 
-
-X_LEN = 600
+X_LEN = 1200
 MA = X_LEN / 10
 
-READ_LEN = 1 + 1 + 1 + (X_LEN - MA + 1 - MA + 1)
+READ_LEN = 1 + 1 + 1 + X_LEN
 
 
 
@@ -28,8 +28,8 @@ def moving_average(a, n=3) :
 
 def Z_normalize(vec):
     m = vec.mean()
-    #s = vec.std()
-    s = max( vec.max(), np.abs(vec.min()) )
+    s = vec.std()
+    #s = max( vec.max(), np.abs(vec.min()) )
 
     vec -= m
     vec /= s
@@ -63,10 +63,10 @@ def extract_features(ts):
 
     ts = ts.astype(np.float32)
 
-    features1 = Z_normalize(ts)
-    features1 = PAA(features1, X_LEN)
-    features1 = moving_average(features1, MA)
-    features1 = moving_average(features1, MA)
+    Z_normalize(ts)
+    features1 = PAA(ts, X_LEN)
+    #features1 = moving_average(features1, MA)
+    #features1 = moving_average(features1, MA)
     ret = features1.astype(np.float32)
 
 

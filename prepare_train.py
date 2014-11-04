@@ -32,26 +32,25 @@ X_LEN = features.X_LEN
 
 W=50
 
-origin = sp.zeros((X_LEN,), dtype=np.float32)
-gen_mean = None
-ii_mean = None
-pi_mean = None
+
+
+PATIENT = 1
+DOG = 0
 
 
 
 
 
+patients = set(files.Patient_1_interictal_files + files.Patient_1_preictal_files + files.Patient_1_test_files +
+               files.Patient_2_interictal_files + files.Patient_2_preictal_files + files.Patient_2_test_files)
 
 
-def load_means():
-    global gen_mean, ii_mean, pi_mean
-    dt = np.float32
-    with open(path_train + "mean_curves.csv", "r") as fin:
-        length = int( fin.readline() )
-        gen_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
-        ii_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
-        pi_mean = np.fromfile(fin, dtype=dt, count=length, sep=',')
 
+
+def get_subj(f_id):
+    if f_id in patients:
+        return PATIENT
+    return DOG
 
 
 def DTWDistance(s1, s2, w, giveup_threshold = float('inf')):
@@ -80,7 +79,7 @@ def get_k_of_n(k, low, high):
 
 
 def write(fout, cls, vec, f_id, s_id):
-    to_file = sp.concatenate(([f_id, s_id, cls], vec))
+    to_file = sp.concatenate(([f_id, s_id, get_subj(f_id), cls], vec))
     to_file.tofile(fout, sep=',')
     fout.write(os.linesep)
     fout.flush()

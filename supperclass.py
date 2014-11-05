@@ -52,11 +52,11 @@ X_IDX     = 4
 
 PREP_D = 140
 N_COMP_D = 1
-NUM_IN_HEAP_D = 2
+NUM_IN_HEAP_D = 7
 
 PREP_P = 180
 N_COMP_P = 1
-NUM_IN_HEAP_P = 2
+NUM_IN_HEAP_P = 11
 
 
 
@@ -104,7 +104,7 @@ def get_data_matrix(f, key_word):
 def read_data():
     data = None
 
-    data_files = [path_train + f for f in os.listdir(path_train)]
+    data_files = [path_train + f for f in os.listdir(path_train) if "fast" not in f]
 
     length = features.READ_LEN
 
@@ -119,6 +119,24 @@ def read_data():
     return data.astype(np.float32)
 
 
+
+
+def read_data_fast():
+    data_d = None
+    data_p = None
+
+    fn_d = path_train + "train_fast_d.csv"
+    fn_p = path_train + "train_fast_p.csv"
+
+    length = features.READ_LEN
+
+    with open(fn_d, "r") as fin:
+        data_d = np.loadtxt(fin, delimiter=',')
+
+    with open(fn_p, "r") as fin:
+        data_p = np.loadtxt(fin, delimiter=',')
+
+    return data_p.astype(np.float32), data_d.astype(np.float32)
 
 
 
@@ -155,24 +173,30 @@ def prep_data(data, length):
 
 
 def process():
-    data = read_data()
+    data_p, data_d = read_data_fast()
     print "# Data loaded"
 
-    rows = data.shape[0]
-    cols = data.shape[1]
+    LEN = features.X_LEN
+
+    rows_p = data_p.shape[0]
+    cols_p = data_p.shape[1]
+
+    rows_d = data_d.shape[0]
+    cols_d = data_d.shape[1]
 
 
-    iid = (data[:,CLS_IDX] == INTERICTAL_CLS) & (data[:,SUB_IDX] == DOG)
-    ipd = (data[:,CLS_IDX] == PREICTAL_CLS) & (data[:,SUB_IDX] == DOG)
+    iid = data_d[:,CLS_IDX] == INTERICTAL_CLS
+    ipd = data_d[:,CLS_IDX] == PREICTAL_CLS
 
-    iip = (data[:,CLS_IDX] == INTERICTAL_CLS) & (data[:,SUB_IDX] == PATIENT)
-    ipp = (data[:,CLS_IDX] == PREICTAL_CLS) & (data[:,SUB_IDX] == PATIENT)
+    iip = data_p[:,CLS_IDX] == INTERICTAL_CLS
+    ipp = data_p[:,CLS_IDX] == PREICTAL_CLS
 
 
-    did = prep_data(data[iid, X_IDX:], PREP_D)
-    dip = prep_data(data[iip, X_IDX:], PREP_P)
-    dpd = prep_data(data[ipd, X_IDX:], PREP_D)
-    dpp = prep_data(data[ipp, X_IDX:], PREP_P)
+    did = data_d[iid, X_IDX:]
+    dpd = data_d[ipd, X_IDX:]
+
+    dip = data_p[iip, X_IDX:]
+    dpp = data_p[ipp, X_IDX:]
 
     print "did", did.shape
     print "dip", dip.shape
@@ -203,6 +227,7 @@ def process():
     print "cpp_prob", cpp_prob
 
 
+    data = read_data()
     dog_vs_man = RandomForestClassifier(n_estimators=2000)
     dog_vs_man.fit(data[:,X_IDX:], data[:,SUB_IDX])
 
@@ -221,6 +246,8 @@ def process():
         cls = get_cls(seg)
 
         data_matrix, freq, sensors, length = get_data_matrix(fn, seg)
+
+        heap_sensors = []
 
         p = 0.
         cnt = 0.
@@ -254,17 +281,19 @@ def process():
             t /= float(num_items)
             #print "# sensor", s, "max N:", heapq.nlargest(num_items+1, h)
 
-            p += float(INTERICTAL_CLS if t < .5 else PREICTAL_CLS)
-            cnt += 1.
+            p = INTERICTAL_CLS if t < .5 else PREICTAL_CLS
+            t = abs(t - .5)
+            heapq.heappush(heap_sensors, (t, p))
 
-        if cnt != 0.:
-            p /= cnt
-            v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
-            print "# %s,%d (%f)" % (fn, v, p)
-        else:
-            p = 1.
-            v = 1.
-            print "# %s,%d (%f)" % (fn, v, p)
+        num_items = NUM_IN_HEAP if d_or_m == PATIENT else NUM_IN_HEAP_D
+        t = 0.
+        for p, cls in heapq.nlargest(num_items, heap_sensors):
+            t += cls
+
+        p = t / num_items
+        v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
+        print "# %s,%d (%f)" % (fn, v, p)
+
 
 
 

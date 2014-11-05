@@ -8,6 +8,8 @@ import scipy.spatial.distance as spd
 import sklearn.hmm as hmm
 import sklearn.svm as svm
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+
 
 import matplotlib.pyplot as plt
 import ctypes
@@ -56,8 +58,11 @@ W = 600
 
 PREP = 180
 N_COMP = 1
-NUM_IN_HEAP = 2
+NUM_IN_HEAP = 11
 
+PREP_D = 140
+N_COMP_D = 1
+NUM_IN_HEAP_D = 7
 
 
 
@@ -103,7 +108,7 @@ def get_data_matrix(f, key_word):
 def read_data():
     data = None
 
-    data_files = [path_train + f for f in os.listdir(path_train)]
+    data_files = [path_train + f for f in os.listdir(path_train) if 'fast' not in f]
 
     length = features.READ_LEN
 
@@ -323,9 +328,13 @@ def process_hmm(data):
 
             for v in vec:
                 if False:
-                    pi = cip.score([v]) + cip_prob
-                    pp = cpp.score([v]) + cpp_prob
+##                    pi = cip.score([v]) + cip_prob
+##                    pp = cpp.score([v]) + cpp_prob
+                    pi = cip.score([v])
+                    pp = cpp.score([v])
                 else:
+##                    pi = cid.score([v]) + cid_prob
+##                    pp = cpd.score([v]) + cpd_prob
                     pi = cid.score([v]) + cid_prob
                     pp = cpd.score([v]) + cpd_prob
 
@@ -617,26 +626,413 @@ def dog_vs_man2():
 
 
 
+def write(fout, attribs, vectors, orig):
+    for attr in attribs:
+        pi = attr[1]
+        pp = attr[2]
+        id = attr[3]
+
+        to_file = None
+
+        if pi > pp:
+            # interictal
+            if orig[SUB_IDX] == PATIENT:
+                to_file = sp.concatenate(([orig[FILE_IDX], orig[SEG_IDX], PATIENT, INTERICTAL_CLS], vectors[id]))
+            else:
+                to_file = sp.concatenate(([orig[FILE_IDX], orig[SEG_IDX], DOG, INTERICTAL_CLS], vectors[id]))
+        else:
+            # preictal
+            if orig[SUB_IDX] == PATIENT:
+                to_file = sp.concatenate(([orig[FILE_IDX], orig[SEG_IDX], PATIENT, PREICTAL_CLS], vectors[id]))
+            else:
+                to_file = sp.concatenate(([orig[FILE_IDX], orig[SEG_IDX], DOG, PREICTAL_CLS], vectors[id]))
+
+        to_file.tofile(fout, sep=',')
+        fout.write(os.linesep)
+        fout.flush()
+
+
+
+def gen_train_sets():
+    data = read_data()
+
+    LEN = features.X_LEN
+
+    rows = data.shape[0]
+    cols = data.shape[1]
+
+
+    iid = (data[:,CLS_IDX] == INTERICTAL_CLS) & (data[:,SUB_IDX] == DOG)
+    ipd = (data[:,CLS_IDX] == PREICTAL_CLS) & (data[:,SUB_IDX] == DOG)
+
+    iip = (data[:,CLS_IDX] == INTERICTAL_CLS) & (data[:,SUB_IDX] == PATIENT)
+    ipp = (data[:,CLS_IDX] == PREICTAL_CLS) & (data[:,SUB_IDX] == PATIENT)
+
+
+    did = prep_data(data[iid, X_IDX:], PREP_D)
+    dip = prep_data(data[iip, X_IDX:], PREP)
+    dpd = prep_data(data[ipd, X_IDX:], PREP_D)
+    dpp = prep_data(data[ipp, X_IDX:], PREP)
+
+    print "did", did.shape
+    print "dip", dip.shape
+    print "dpd", dpd.shape
+    print "dpp", dpp.shape
+
+
+    cid = hmm.GMMHMM(n_components = N_COMP_D, n_iter = 500)
+    cip = hmm.GMMHMM(n_components = N_COMP, n_iter = 500)
+    cpd = hmm.GMMHMM(n_components = N_COMP_D, n_iter = 500)
+    cpp = hmm.GMMHMM(n_components = N_COMP, n_iter = 500)
+
+    cid.fit([did])
+    cip.fit([dip])
+    cpd.fit([dpd])
+    cpp.fit([dpp])
+    print "Fitting finished"
+
+    cid_prob = sp.log( did.shape[0] / float(did.shape[0] + dpd.shape[0]) )
+    cpd_prob = sp.log( dpd.shape[0] / float(did.shape[0] + dpd.shape[0]) )
+
+    cip_prob = sp.log( dip.shape[0] / float(dip.shape[0] + dpp.shape[0]) )
+    cpp_prob = sp.log( dpp.shape[0] / float(dip.shape[0] + dpp.shape[0]) )
+
+    print "cid_prob", cid_prob
+    print "cpd_prob", cpd_prob
+    print "cip_prob", cip_prob
+    print "cpp_prob", cpp_prob
+
+
+    did = None
+    dip = None
+    dpd = None
+    dpp = None
+
+    train_fn_d = path_train + "train_fast_d.csv"
+    train_fn_p = path_train + "train_fast_p.csv"
+    with open(train_fn_d, "w+") as fout_d:
+        with open(train_fn_p, "w+") as fout_p:
+            for d in data:
+                prep = PREP if d[SUB_IDX] == PATIENT else PREP_D
+
+                vec = prep_data(d[X_IDX:].reshape((1, d[X_IDX:].shape[0])), prep)
+
+                h = []
+
+                for id, v in enumerate(vec):
+                    if d[SUB_IDX] == PATIENT:
+                        pi = cip.score([v]) + cip_prob
+                        pp = cpp.score([v]) + cpp_prob
+                    else:
+                        pi = cid.score([v]) + cid_prob
+                        pp = cpd.score([v]) + cpd_prob
+
+                    delta = abs(pi - pp)
+                    heapq.heappush(h, (delta, pi, pp, id))
+
+                num_items = NUM_IN_HEAP if d[SUB_IDX] == PATIENT else NUM_IN_HEAP_D
+                fout = fout_p if d[SUB_IDX] == PATIENT else fout_d
+                write(fout, heapq.nlargest(num_items, h), vec, d)
+
+
+
+
+
+def read_data_fast():
+    data_d = None
+    data_p = None
+
+    fn_d = path_train + "train_fast_d.csv"
+    fn_p = path_train + "train_fast_p.csv"
+
+    length = features.READ_LEN
+
+    with open(fn_d, "r") as fin:
+        data_d = np.loadtxt(fin, delimiter=',')
+
+    with open(fn_p, "r") as fin:
+        data_p = np.loadtxt(fin, delimiter=',')
+
+    return data_p.astype(np.float32), data_d.astype(np.float32)
+
+
+
+def process_hmm3():
+
+    data_p, data_d = read_data_fast()
+
+    test_ii_indices = [424,295,67,340,107,231,134,443,268,171,86,391,220,267,236,345,388,232,88,57,691,800,840,967,509,582,521,620,488,742,755,740,492,577,637,781,496,787,958,782,1874,981,1197,2401,1914,1798,2312,2348,1950,1090,2034,1512,1875,1604,1867,1441,1298,1772,1842,2061,2990,3008,2728,3188,3160,2507,3070,2513,2836,2520,2430,2677,2999,2943,3028,3104,2977,3165,3209,2530,3626,3616,3427,3275,3396,3229,3497,3649,3424,3547,3365,3496,3652,3512,3537,3267,3542,3369,3262,3611,3719,3675,3676,3712,3721,3682,3683,3684,3687,3688,3717,3691,3723,3693,3711,3695,3696,3698,3702,3706,3725,3726,3727,3731,3734,3737,3739,3740,3741,3742,3743,3745,3746,3747,3765,3751,3753,3764,3759,3763]
+    test_pi_indices = [3784,3767,3769,3773,3787,3775,3788,3780,3782,3783,3812,3791,3792,3816,3808,3826,3810,3813,3814,3803,3883,3895,3872,3900,3843,3846,3838,3839,3861,3881,3953,3946,3954,3951,3964,3931,3938,3936,3927,3999,4002,4003,4029,4015,4030,4008,4017,4010,4014,4019,4032,4034,4038,4039,4040,4044,4045,4048,4051,4054,4057,4058,4059,4060,4061,4064]
+
+
+    ###############################################################3
+
+    LEN = features.X_LEN
+
+    rows_p = data_p.shape[0]
+    cols_p = data_p.shape[1]
+
+    rows_d = data_d.shape[0]
+    cols_d = data_d.shape[1]
+
+
+    iid = data_d[:,CLS_IDX] == INTERICTAL_CLS
+    ipd = data_d[:,CLS_IDX] == PREICTAL_CLS
+
+    iip = data_p[:,CLS_IDX] == INTERICTAL_CLS
+    ipp = data_p[:,CLS_IDX] == PREICTAL_CLS
+
+
+    did = data_d[iid, X_IDX:]
+    dpd = data_d[ipd, X_IDX:]
+
+    dip = data_p[iip, X_IDX:]
+    dpp = data_p[ipp, X_IDX:]
+
+    print "did", did.shape
+    print "dip", dip.shape
+    print "dpd", dpd.shape
+    print "dpp", dpp.shape
+
+
+    cid = hmm.GMMHMM(n_components = N_COMP_D, n_iter = 500)
+    cpd = hmm.GMMHMM(n_components = N_COMP_D, n_iter = 500)
+
+    cip = hmm.GMMHMM(n_components = N_COMP, n_iter = 500)
+    cpp = hmm.GMMHMM(n_components = N_COMP, n_iter = 500)
+
+    cid.fit([did])
+    cip.fit([dip])
+    cpd.fit([dpd])
+    cpp.fit([dpp])
+    print "Fitting finished"
+
+    cid_prob = sp.log( did.shape[0] / float(did.shape[0] + dpd.shape[0]) )
+    cpd_prob = sp.log( dpd.shape[0] / float(did.shape[0] + dpd.shape[0]) )
+
+    cip_prob = sp.log( dip.shape[0] / float(dip.shape[0] + dpp.shape[0]) )
+    cpp_prob = sp.log( dpp.shape[0] / float(dip.shape[0] + dpp.shape[0]) )
+
+    print "cid_prob", cid_prob
+    print "cpd_prob", cpd_prob
+    print "cip_prob", cip_prob
+    print "cpp_prob", cpp_prob
+
+
+
+    y = []
+    result = []
+
+    for i in (test_ii_indices + test_pi_indices):
+
+##        if i in patients:
+##            continue
+
+        if i in files.INTERICTAL_FILES:
+            fn = files.INTERICTAL_FILES[ i ]
+        else:
+            fn = files.PREICTAL_FILES[ i ]
+
+        seg = get_segment(fn)
+        cls = get_cls(seg)
+
+        if i in patients:
+            d_or_m = PATIENT
+        else:
+            d_or_m = DOG
+
+        y.append(cls)
+
+
+
+        data_matrix, freq, sensors, length = get_data_matrix(fn, seg)
+
+        heap_sensors = []
+
+        p = 0.
+        cnt = 0.
+        for s in range(sensors):
+            vec = features.extract_features( data_matrix[s] )
+
+            prep = PREP if d_or_m == PATIENT else PREP_D
+
+            vec = prep_data(vec.reshape((1, vec.shape[0])), prep)
+
+            h = []
+
+            for v in vec:
+                if d_or_m == PATIENT:
+                    pi = cip.score([v]) + cip_prob
+                    pp = cpp.score([v]) + cpp_prob
+                else:
+                    pi = cid.score([v]) + cid_prob
+                    pp = cpd.score([v]) + cpd_prob
+
+
+                delta = abs(pi - pp)
+                #print "#>>", "%2.20f vs %2.20f (%f)" % (pi, pp, delta)
+                heapq.heappush(h, (delta, pi, pp))
+
+            num_items = NUM_IN_HEAP if d_or_m == PATIENT else NUM_IN_HEAP_D
+            t = 0.
+            for delta, pi, pp in heapq.nlargest(num_items, h):
+                t += float(INTERICTAL_CLS if pi > pp else PREICTAL_CLS)
+            t /= float(num_items)
+            print "# sensor", s, "max N:", heapq.nlargest(num_items+1, h)
+
+            p = INTERICTAL_CLS if t < .5 else PREICTAL_CLS
+            t = abs(t - .5)
+            heapq.heappush(heap_sensors, (t, p))
+
+        num_items = NUM_IN_HEAP if d_or_m == PATIENT else NUM_IN_HEAP_D
+        t = 0.
+        for p, cls in heapq.nlargest(num_items, heap_sensors):
+            t += cls
+
+        p = t / num_items
+        v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
+        result.append(v)
+        print "# %s,%d (%f)" % (fn, v, p)
+
+    res = classification_report(y, result)
+    print res
+
+
+
+
+
+def process_rf():
+
+    data_p, data_d = read_data_fast()
+
+    test_ii_indices = [424,295,67,340,107,231,134,443,268,171,86,391,220,267,236,345,388,232,88,57,691,800,840,967,509,582,521,620,488,742,755,740,492,577,637,781,496,787,958,782,1874,981,1197,2401,1914,1798,2312,2348,1950,1090,2034,1512,1875,1604,1867,1441,1298,1772,1842,2061,2990,3008,2728,3188,3160,2507,3070,2513,2836,2520,2430,2677,2999,2943,3028,3104,2977,3165,3209,2530,3626,3616,3427,3275,3396,3229,3497,3649,3424,3547,3365,3496,3652,3512,3537,3267,3542,3369,3262,3611,3719,3675,3676,3712,3721,3682,3683,3684,3687,3688,3717,3691,3723,3693,3711,3695,3696,3698,3702,3706,3725,3726,3727,3731,3734,3737,3739,3740,3741,3742,3743,3745,3746,3747,3765,3751,3753,3764,3759,3763]
+    test_pi_indices = [3784,3767,3769,3773,3787,3775,3788,3780,3782,3783,3812,3791,3792,3816,3808,3826,3810,3813,3814,3803,3883,3895,3872,3900,3843,3846,3838,3839,3861,3881,3953,3946,3954,3951,3964,3931,3938,3936,3927,3999,4002,4003,4029,4015,4030,4008,4017,4010,4014,4019,4032,4034,4038,4039,4040,4044,4045,4048,4051,4054,4057,4058,4059,4060,4061,4064]
+
+
+    ###############################################################3
+
+    LEN = features.X_LEN
+
+    rows_p = data_p.shape[0]
+    cols_p = data_p.shape[1]
+
+    rows_d = data_d.shape[0]
+    cols_d = data_d.shape[1]
+
+
+    #cd = RandomForestClassifier(n_estimators=100)
+    #cp = RandomForestClassifier(n_estimators=100)
+
+    cd = hmm.GaussianHMM(n_components=N_COMP_D)
+    cp = hmm.GaussianHMM(n_components=N_COMP)
+
+##    cd.fit(data_d[:,X_IDX:], data_d[:,CLS_IDX])
+##    cp.fit(data_p[:,X_IDX:], data_p[:,CLS_IDX])
+    cd.fit(data_d[:,X_IDX:])
+    cp.fit(data_p[:,X_IDX:])
+    print "# Fitting finished"
+
+
+    y = []
+    result = []
+
+    for i in (test_ii_indices + test_pi_indices):
+
+        if i in files.INTERICTAL_FILES:
+            fn = files.INTERICTAL_FILES[ i ]
+        else:
+            fn = files.PREICTAL_FILES[ i ]
+
+        seg = get_segment(fn)
+        cls = get_cls(seg)
+
+        if i in patients:
+            d_or_m = PATIENT
+        else:
+            d_or_m = DOG
+
+        y.append(cls)
+
+
+
+        data_matrix, freq, sensors, length = get_data_matrix(fn, seg)
+
+        heap_sensors = []
+
+        for s in range(sensors):
+            vec = features.extract_features( data_matrix[s] )
+
+            prep = PREP if d_or_m == PATIENT else PREP_D
+            vec = prep_data(vec.reshape((1, vec.shape[0])), prep)
+
+
+            h = []
+
+            for v in vec:
+                if d_or_m == PATIENT:
+                    t = cp.predict_proba(v)
+                    #t = cp.predict(v)
+                    pi = t[0,0]
+                    pp = t[0,1]
+                else:
+                    t = cd.predict_proba(v)
+                    #t = cd.predict(v)
+                    pi = t[0,0]
+                    pp = t[0,1]
+
+
+                delta = abs(pi - pp)
+                #print "#>>", "%2.20f vs %2.20f (%f)" % (pi, pp, delta)
+                heapq.heappush(h, (delta, pi, pp))
+
+            num_items = NUM_IN_HEAP if d_or_m == PATIENT else NUM_IN_HEAP_D
+            t = 0.
+            for delta, pi, pp in heapq.nlargest(num_items, h):
+                t += float(INTERICTAL_CLS if pi > pp else PREICTAL_CLS)
+            t /= float(num_items)
+            print "# sensor", s, "max N:", heapq.nlargest(num_items+1, h)
+
+            p = INTERICTAL_CLS if t < .5 else PREICTAL_CLS
+            t = abs(t - .5)
+            heapq.heappush(heap_sensors, (t, p))
+
+        num_items = NUM_IN_HEAP if d_or_m == PATIENT else NUM_IN_HEAP_D
+        t = 0.
+        for p, cls in heapq.nlargest(num_items, heap_sensors):
+            t += cls
+
+        p = t / num_items
+        v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
+        result.append(v)
+        print "# %s,%d (%f)" % (fn, v, p)
+
+    res = classification_report(y, result)
+    print res
+
+
+
+
 
 def main():
     sp.random.seed()
 
-    dog_vs_man2()
-    return
+    #gen_train_sets()
+    #process_hmm3()
+    #process_rf()
+    #return
 
-    data = read_data()
+    #data = read_data()
 
     global PREP, N_COMP, NUM_IN_HEAP
+    global PREP_D, N_COMP_D, NUM_IN_HEAP_D
 
-    prep = 10
-    for i in range(21):
-        PREP = prep
-        N_COMP = 1
-        NUM_IN_HEAP = 2
 
-        process_hmm(data)
-
-        prep += 10
+    for num_d in range(1,15):
+        for num_p in range(1,15):
+            NUM_IN_HEAP = num_p
+            NUM_IN_HEAP_D = num_d
+            process_hmm3()
+            print "# num_p", NUM_IN_HEAP, "num_d", NUM_IN_HEAP_D
 
     #process()
     #process_hmm()

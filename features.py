@@ -59,15 +59,41 @@ def PAA(ORIG, bins):
 
 
 
-def extract_features(ts):
+def extract_features(ts, start=5000, step=1000):
 
     ts = ts.astype(np.float32)
 
-    Z_normalize(ts)
-    features1 = PAA(ts, X_LEN)
-    #features1 = moving_average(features1, MA)
-    #features1 = moving_average(features1, MA)
-    ret = features1.astype(np.float32)
+    D = 0 if (1 == len(ts.shape)) else 1
+
+    num = start
+
+    trend = moving_average(ts, num)
+    num -= step
+    trend = moving_average(trend, num)
+    num -= step
+    trend = moving_average(trend, num)
+    num -= step
+    trend = moving_average(trend, num)
+    num -= step
+    trend = moving_average(trend, num)
+
+    L = min(ts.shape[D], trend.shape[D])
+
+    if 0 == D:
+        sesonal = ts[:L] - trend[:L]
+    else:
+        sesonal = ts[:,:L] - trend[:,:L]
+    sesonal = moving_average(sesonal, num)
+
+    L = min(ts.shape[D], trend.shape[D], sesonal.shape[D])
+    if 0 == D:
+        noise = (ts[:L] - trend[:L]) - sesonal[:L]
+    else:
+        noise = (ts[:,:L] - trend[:,:L]) - sesonal[:,:L]
+
+    return trend, sesonal, noise
 
 
-    return ret
+
+
+

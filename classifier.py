@@ -10,109 +10,39 @@ import scipy.io as sio
 import ctypes
 import datetime as dt
 
+from sklearn.ensemble import RandomForestClassifier
+
+
 from sklearn.metrics import classification_report
 
 import files
 import features
 
 
-DLL = ctypes.cdll.LoadLibrary("C:\\Temp\\kaggle\\epilepsy\\scripts\\sub5\\dtw_fast.dll")
-
 
 path = "C:\\Temp\\kaggle\\epilepsy\\data\\"
-path_train = path + "prepared_sub5\\"
+path_train = path + "prepared_sub6\\"
 
 
 PREICTAL_CLS = 1
 INTERICTAL_CLS = 0
 
-X_LEN = features.READ_LEN
 
-
-W=600
-
-
-
-origin = sp.zeros((X_LEN,), dtype=np.float32)
-gen_mean = None
-ii_mean = None
-pi_mean = None
+patients = set(files.Patient_1_interictal_files + files.Patient_1_preictal_files + files.Patient_1_test_files +
+               files.Patient_2_interictal_files + files.Patient_2_preictal_files + files.Patient_2_test_files)
 
 
 
 FILE_IDX  = 0
 SEG_IDX   = 1
-CLS_IDX   = 2
-X_IDX     = 3
+SUB_IDX   = 2
+CLS_IDX   = 3
+X_IDX     = 4
 
 
 
 
 
-
-def DTWDistance(s1, s2, w, giveup_threshold = float('inf')):
-    res = ctypes.c_float(0.)
-    code = DLL.DTWDistance(s1.ctypes.data, s2.ctypes.data, ctypes.c_int(s1.shape[0]), ctypes.c_int(s2.shape[0]), ctypes.c_int(w), ctypes.c_float(giveup_threshold), ctypes.addressof(res))
-    return res.value
-
-
-def DTWDistance_BM(s1, s2, w, giveup_threshold):
-
-    N1 = s1.shape[0] + 1
-    N2 = s2.shape[0] + 1
-
-    giveup = False
-
-    DTW = sp.zeros((N1, N2), dtype=np.float32)
-
-    w = max(w, abs(len(s1)-len(s2)))
-
-    DTW.fill(float('inf'))
-    DTW[0,0] = 0
-
-    for i in range(len(s1)):
-
-        min_dist = float('inf')
-
-        for j in range(max(0, i-w), min(len(s2), i+w)):
-            dist= (s1[i]-s2[j])**2
-
-            dtwI = i + 1
-            dtwJ = j + 1
-
-            DTW[dtwI, dtwJ] = dist + min(DTW[dtwI-1,dtwJ], DTW[dtwI,dtwJ-1], DTW[dtwI-1,dtwJ-1])
-
-            if min_dist > DTW[dtwI, dtwJ]:
-                min_dist = DTW[dtwI, dtwJ]
-
-        if min_dist > giveup_threshold:
-            giveup = True
-            break
-
-    return min_dist if giveup else DTW[len(s1), len(s2)]
-
-
-
-###################################################
-
-
-
-###################################################
-
-
-
-def distance(s1, s2, giveup_threshold = float('inf')):
-##    global memo
-##    memo.clear()
-##
-##    d = LCS(s1, s2, s1.shape[0], s2.shape[0])
-##    return 1. / d if d != 0 else float('inf')
-
-
-    d = DTWDistance(s1, s2, W, giveup_threshold)
-
-
-    return d
 
 
 
@@ -133,6 +63,11 @@ def get_cls(segment):
 
 
 
+
+def get_cor(v1, v2):
+    L = min(v1.shape[0], v2.shape[0])
+    cr = np.corrcoef(v1[:L], v2[:L])
+    return cr[0,1]
 
 
 
@@ -173,50 +108,127 @@ def read_data():
 
 
 
-
-
-def get_min_distance(data, v):
-
-    min_d = float('inf')
-    cls = INTERICTAL_CLS
-    f_id = -1
-    s_id = -1
-
-    for c in data:
-        d = distance(v, c[3:], min_d)
-        if min_d > d:
-            min_d = d
-            f_id = c[0]
-            s_id = c[1]
-            cls = c[2]
-
-            print "# >>", min_d, cls, "(%d, %d)" % (f_id, s_id)
-
-    return min_d, cls, f_id, s_id
+def get_k_of_n(k, low, high):
+    numbers = np.array(range(low, low + k))
+    for i in range(low + k, high):
+        r = sp.random.randint(low, i) - low
+        if r < k:
+            numbers[r] = i
+    return numbers
 
 
 
-def process(data):
+
+
+def to_features(orig):
+    trend, seson, noise = features.extract_features( orig )
+
+    cum_sum = np.cumsum(seson)
+    cum_sum /= (cum_sum.max() - cum_sum.min())
+    seson_norm = seson - cum_sum
+
+    # stats
+    vec = sp.concatenate((
+        [
+            orig.std(),
+            orig.min(),
+            orig.max(),
+            np.median(orig),
+
+            trend.std(),
+            trend.min(),
+            trend.max(),
+            np.median(trend),
+
+            seson.std(),
+            seson.min(),
+            seson.max(),
+            np.median(seson),
+
+            noise.std(),
+            noise.min(),
+            noise.max(),
+            np.median(noise),
+
+            cum_sum.std(),
+            cum_sum.min(),
+            cum_sum.max(),
+            np.median(cum_sum),
+
+            seson_norm.std(),
+            seson_norm.min(),
+            seson_norm.max(),
+            np.median(seson_norm),
+
+            get_cor(orig, trend),
+            get_cor(orig, seson),
+            get_cor(orig, noise),
+            get_cor(orig, cum_sum),
+            get_cor(orig, seson_norm),
+
+            get_cor(trend, seson),
+            get_cor(trend, noise),
+            get_cor(trend, cum_sum),
+            get_cor(trend, seson_norm),
+
+            get_cor(seson, noise),
+            get_cor(seson, cum_sum),
+            get_cor(seson, seson_norm),
+
+            get_cor(noise, cum_sum),
+            get_cor(noise, seson_norm),
+
+            get_cor(cum_sum, seson_norm),
+        ],
+        ))
+    return vec
+
+
+
+
+def save_rf(classifier):
+    import pickle
+    output = open(path + 'rf.txt', 'wb')
+    pickle.dump(classifier, output)
+    output.close()
+
+
+
+def process():
+
+    data = read_data()
+
+    c = RandomForestClassifier(n_estimators=1001)
+
+    train = data[:,X_IDX:]
+    #train = sp.concatenate((data[:,X_IDX:], data[:,X_IDX:]**2), axis=1)
+    Y = data[:,CLS_IDX]
+
+    c.fit(train, Y)
+    print "# Fitting finished"
+
 
     #########################################################
     ## select test files
     #########################################################
 
-    #test_ii_indices = [381,273,324,416,91,5,172,141,84,88,563,724,634,546,735,864,686,570,759,765,1151,1942,1013,1515,1437,1739,1817,1892,2408,1058,2577,2455,3086,2457,2974,2694,2436,2427,3188,3091,3417,3388,3421,3641,3436,3394,3479,3513,3487,3250,3714,3676,3716,3723,3679,3691,3713,3682,3683,3689,3724,3757,3752,3745,3729,3754,3751,3733,3747,3748]
-    #test_pi_indices = [3766,3789,3770,3772,3773,3785,3775,3778,3784,3786,3819,3792,3809,3827,3811,3817,3798,3823,3807,3825,3886,3869,3850,3860,3858,3903,3856,3848,3872,3883,3904,3929,3960,3907,3931,3921,3917,3975,3916,3990,4001,4002,4020,4015,4007,4008,4030,4019,4011,4028,4031,4033,4037,4039,4042,4044,4045,4047,4049,4050,4055,4056,4060,4061,4063,4066]
-    test_ii_indices = [424,295,67,340,107,231,134,443,268,171,86,391,220,267,236,345,388,232,88,57,691,800,840,967,509,582,521,620,488,742,755,740,492,577,637,781,496,787,958,782,1874,981,1197,2401,1914,1798,2312,2348,1950,1090,2034,1512,1875,1604,1867,1441,1298,1772,1842,2061,2990,3008,2728,3188,3160,2507,3070,2513,2836,2520,2430,2677,2999,2943,3028,3104,2977,3165,3209,2530,3626,3616,3427,3275,3396,3229,3497,3649,3424,3547,3365,3496,3652,3512,3537,3267,3542,3369,3262,3611,3719,3675,3676,3712,3721,3682,3683,3684,3687,3688,3717,3691,3723,3693,3711,3695,3696,3698,3702,3706,3725,3726,3727,3731,3734,3737,3739,3740,3741,3742,3743,3745,3746,3747,3765,3751,3753,3764,3759,3763]
-    test_pi_indices = [3784,3767,3769,3773,3787,3775,3788,3780,3782,3783,3812,3791,3792,3816,3808,3826,3810,3813,3814,3803,3883,3895,3872,3900,3843,3846,3838,3839,3861,3881,3953,3946,3954,3951,3964,3931,3938,3936,3927,3999,4002,4003,4029,4015,4030,4008,4017,4010,4014,4019,4032,4034,4038,4039,4040,4044,4045,4048,4051,4054,4057,4058,4059,4060,4061,4064]
+    test_ii_indices = [323,415,296,223,108,154,206,43,456,134,841,816,849,542,505,533,703,487,511,795,1061,1921,1704,1385,1504,1253,1286,2073,1505,1466,2781,2870,2866,2835,2913,2624,2671,2807,3082,3074,3647,3640,3427,3608,3525,3442,3620,3459,3504,3665,3675,3676,3719,3678,3679,3699,3709,3708,3710,3697,3764,3747,3752,3727,3750,3757,3737,3743,3733,3734]
+    test_pi_indices = [3766,3770,3773,3774,3775,3784,3777,3778,3781,3787,3790,3806,3803,3826,3805,3831,3821,3799,3820,3812,3902,3857,3863,3864,3882,3893,3869,3850,3840,3861,3924,3987,3927,3908,3981,3922,3975,3962,3917,3945,4001,4002,4016,4023,4021,4007,4017,4024,4011,4015,4033,4034,4035,4037,4038,4041,4043,4046,4053,4056,4057,4058,4059,4062,4063,4066]
+
     #########################################################
 
     y = []
     result = []
 
     for i in (test_ii_indices + test_pi_indices):
-    #for i in (test_pi_indices):
+        if i in patients:
+            continue
+
         if i in files.INTERICTAL_FILES:
             fn = files.INTERICTAL_FILES[ i ]
         else:
             fn = files.PREICTAL_FILES[ i ]
+    #for i, fn in files.TEST_FILES.items():
 
         seg = get_segment(fn)
         cls = get_cls(seg)
@@ -225,26 +237,26 @@ def process(data):
 
         data_matrix, freq, sensors, length = get_data_matrix(fn, seg)
 
+
+        good_sensors = [4, 6, 14] # get_k_of_n(7, 0, sensors)
+        #good_sensors = range(30)
+
         p = 0.
+        cnt = 0.
         for s in range(sensors):
-            print "# sensor ", s,
-            v = features.extract_features( data_matrix[s] )
-            l = v.shape[0]
-            v1 = v[:l/3]
-            v2 = v[l/3:2*l/3]
-            v3 = v[2*l/3:]
+            if s not in good_sensors:
+                continue
 
-            d, found_cls1, f_id, s_id = get_min_distance(data, v1)
-            d, found_cls2, f_id, s_id = get_min_distance(data, v2)
-            d, found_cls3, f_id, s_id = get_min_distance(data, v3)
-            c = (found_cls1 + found_cls2 + found_cls3) / 3.
-            p += INTERICTAL_CLS if c < .5 else PREICTAL_CLS
+            v = to_features(data_matrix[s])
 
-        p /= sensors
+            pred_cls = c.predict(v)
+            print "# sensor ", s, pred_cls
+            p += pred_cls
+            cnt += 1.
 
-        print "#%s,%f" % (fn, p)
-
+        p /= cnt
         v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
+        print "#%s,%f (%d)" % (fn, p, v)
         result.append(v)
 
 
@@ -253,14 +265,17 @@ def process(data):
     res = classification_report(y, result)
     print res
 
+    answer = raw_input("Save RF?")
+    if "Y" == answer:
+        save_rf(c)
+
 
 
 
 
 def main():
-    data = read_data()
-    print "# data loaded"
-    process(data)
+    sp.random.seed()
+    process()
 
 
 

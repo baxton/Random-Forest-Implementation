@@ -7,6 +7,7 @@ import array
 import numpy as np
 import scipy as sp
 import scipy.io as sio
+import numpy.fft as fft
 import ctypes
 import datetime as dt
 
@@ -21,7 +22,7 @@ import features
 
 
 path = "C:\\Temp\\kaggle\\epilepsy\\data\\"
-path_train = path + "prepared_sub6\\"
+path_train = path + "prepared_sub7\\"
 
 
 PREICTAL_CLS = 1
@@ -130,46 +131,46 @@ def to_features(orig):
     # stats
     vec = sp.concatenate((
         [
-            orig.std(),
-            orig.min(),
-            orig.max(),
+            orig.std(),         # 0 <
+            orig.min(),         # 1 <
+            orig.max(),         # 2
             np.median(orig),
 
-            trend.std(),
-            trend.min(),
-            trend.max(),
-            np.median(trend),
+            trend.std(),        # 4 <
+            trend.min(),        # 5 <
+            trend.max(),        # 6
+            np.median(trend),   # 7 <
 
-            seson.std(),
+            seson.std(),        # 8
             seson.min(),
             seson.max(),
-            np.median(seson),
+            np.median(seson),   # 11
 
             noise.std(),
             noise.min(),
             noise.max(),
-            np.median(noise),
+            np.median(noise),   # 15
 
-            cum_sum.std(),
+            cum_sum.std(),      # 16 <
             cum_sum.min(),
             cum_sum.max(),
             np.median(cum_sum),
 
-            seson_norm.std(),
+            seson_norm.std(),   # 20
             seson_norm.min(),
             seson_norm.max(),
             np.median(seson_norm),
 
-            get_cor(orig, trend),
+            get_cor(orig, trend),   # 24
             get_cor(orig, seson),
             get_cor(orig, noise),
             get_cor(orig, cum_sum),
-            get_cor(orig, seson_norm),
+            get_cor(orig, seson_norm),  # 28
 
-            get_cor(trend, seson),
+            get_cor(trend, seson),      # 29
             get_cor(trend, noise),
-            get_cor(trend, cum_sum),
-            get_cor(trend, seson_norm),
+            get_cor(trend, cum_sum),    # 31 <
+            get_cor(trend, seson_norm), # 32
 
             get_cor(seson, noise),
             get_cor(seson, cum_sum),
@@ -179,6 +180,8 @@ def to_features(orig):
             get_cor(noise, seson_norm),
 
             get_cor(cum_sum, seson_norm),
+
+
         ],
         ))
     return vec
@@ -186,34 +189,67 @@ def to_features(orig):
 
 
 
-def save_rf(classifier):
+def save_rf(classifier, res):
     import pickle
-    output = open(path + 'rf.txt', 'wb')
+
+    f1 = res.split("\n")[-2].split()[-2]
+
+    fn = path + 'rf7_%s.txt' % f1
+    cnt = 0
+    while os.path.exists(fn):
+        cnt += 1
+        fn = path + 'rf7_%s_(%d).txt' % (f1, cnt)
+
+    output = open(fn, 'wb')
     pickle.dump(classifier, output)
     output.close()
 
 
 
+
+def get_train_indices(data):
+    # here I want to adjust training set and reduce number of "interictal" vectors randomly
+    indices = data[:,CLS_IDX] == INTERICTAL_CLS
+    N = indices.sum()
+    K = int(N * .1)
+
+    to_be_removed = get_k_of_n(K, 0, N)
+    print "# to be removed: "
+    for  n in to_be_removed:
+        print n,
+    print
+
+    for i in range(indices.shape[0]):
+        if not indices[i]:
+            indices[i] = True
+        else:
+            if i in to_be_removed:
+                indices[i] = False
+    return indices
+
+
 def process():
 
     data = read_data()
+    indices = get_train_indices(data)
 
-    c = RandomForestClassifier(n_estimators=1001)
+    c = RandomForestClassifier(n_estimators=5001, random_state=int(dt.datetime.now().microsecond))
 
-    train = data[:,X_IDX:]
-    #train = sp.concatenate((data[:,X_IDX:], data[:,X_IDX:]**2), axis=1)
-    Y = data[:,CLS_IDX]
+    X = data[indices,X_IDX:]
+    Y = data[indices,CLS_IDX]
 
-    c.fit(train, Y)
+    c.fit(X, Y)
     print "# Fitting finished"
+
+    print c.feature_importances_
 
 
     #########################################################
     ## select test files
     #########################################################
 
-    test_ii_indices = [323,415,296,223,108,154,206,43,456,134,841,816,849,542,505,533,703,487,511,795,1061,1921,1704,1385,1504,1253,1286,2073,1505,1466,2781,2870,2866,2835,2913,2624,2671,2807,3082,3074,3647,3640,3427,3608,3525,3442,3620,3459,3504,3665,3675,3676,3719,3678,3679,3699,3709,3708,3710,3697,3764,3747,3752,3727,3750,3757,3737,3743,3733,3734]
-    test_pi_indices = [3766,3770,3773,3774,3775,3784,3777,3778,3781,3787,3790,3806,3803,3826,3805,3831,3821,3799,3820,3812,3902,3857,3863,3864,3882,3893,3869,3850,3840,3861,3924,3987,3927,3908,3981,3922,3975,3962,3917,3945,4001,4002,4016,4023,4021,4007,4017,4024,4011,4015,4033,4034,4035,4037,4038,4041,4043,4046,4053,4056,4057,4058,4059,4062,4063,4066]
+    test_ii_indices = [147,429,451,437,325,122,357,168,291,250,254,103,267,422,339,264,729,786,957,961,484,526,727,603,889,789,879,759,492,597,604,607,518,750,609,771,954,637,849,503,970,646,769,624,923,2105,1171,1076,1815,1427,1316,1513,2340,1200,2251,1854,1984,2306,2082,1583,1692,2131,1433,1455,1131,2168,1038,1100,1572,2189,1963,2228,1430,1652,1858,1379,1272,1620,1124,1249,1597,1780,2260,1549,2002,2027,2144,1656,1409,2187,1505,1496,1273,1233,1531,3144,2421,3006,3148,2994,2629,2528,3217,2428,2951,3122,3010,2569,2968,3090,2750,2605,2595,3195,2778,2822,2924,2849,3179,3084,2819,2872,3125,2666,2800,3066,2873,2700,2815,2456,2693,2610,2919,2971,3215,2588,2699,3109,2466,2647,2756,2469,2534,3132,2554,3047,3011,3111,2999,2727,2560,2516,2830,2619,2980,3032,3158,3024,2752,3005,2602,2771,3670,3518,3539,3661,3245,3313,3426,3256,3415,3470,3469,3407,3565,3589,3386,3561,3411,3274,3650,3566,3442,3674,3679,3684,3687,3691,3692,3695,3700,3703,3705,3707,3717,3719,3720,3723,3724,3726,3730,3738,3739,3741,3746,3749,3751,3754,3757,3758,3764]
+    test_pi_indices = [3767,3768,3771,3773,3774,3775,3779,3783,3791,3794,3796,3797,3800,3805,3806,3812,3818,3821,3822,3824,3826,3832,3833,3835,3837,3840,3844,3845,3846,3850,3852,3853,3855,3856,3861,3865,3866,3872,3873,3875,3878,3899,3902,3904,3907,3908,3912,3915,3916,3917,3918,3919,3920,3925,3926,3928,3933,3935,3942,3944,3951,3955,3956,3967,3971,3978,3981,3982,3983,3986,3993,3999,4000,4002,4004,4008,4010,4018,4022,4023,4024,4030]
 
     #########################################################
 
@@ -221,8 +257,8 @@ def process():
     result = []
 
     for i in (test_ii_indices + test_pi_indices):
-        if i in patients:
-            continue
+        #if i in patients:
+        #    continue
 
         if i in files.INTERICTAL_FILES:
             fn = files.INTERICTAL_FILES[ i ]
@@ -239,9 +275,12 @@ def process():
 
 
         good_sensors = [4, 6, 14] # get_k_of_n(7, 0, sensors)
-        #good_sensors = range(30)
+        good_sensors = range(30)
 
-        p = 0.
+        pi_sum = 0.
+        pp_sum = 0.
+        pi_prod = 1.
+        pp_prod = 1.
         cnt = 0.
         for s in range(sensors):
             if s not in good_sensors:
@@ -249,32 +288,37 @@ def process():
 
             v = to_features(data_matrix[s])
 
-            pred_cls = c.predict(v)
+            pred_cls = c.predict_proba(v)
             print "# sensor ", s, pred_cls
-            p += pred_cls
+            pi_sum += pred_cls[0,0]
+            pp_sum += pred_cls[0,1]
+            pi_prod *= pred_cls[0,0]
+            pp_prod *= pred_cls[0,1]
             cnt += 1.
 
-        p /= cnt
-        v = INTERICTAL_CLS if p < .5 else PREICTAL_CLS
-        print "#%s,%f (%d)" % (fn, p, v)
+        pi = cnt * pi_prod / pi_sum
+        pp = cnt * pp_prod / pp_sum
+        p = pi_sum / cnt if pi > pp else pp_sum / cnt
+        v = INTERICTAL_CLS if pi > pp else PREICTAL_CLS
+        print "#%s,%f (%d) (%f %f)" % (fn, p, v, pi, pp)
         result.append(v)
-
 
 
     #######
     res = classification_report(y, result)
     print res
 
-    answer = raw_input("Save RF?")
-    if "Y" == answer:
-        save_rf(c)
+    #answer = raw_input("Save RF?")
+    #if "Y" == answer:
+    print "saving RF"
+    save_rf(c, res)
 
 
 
 
 
 def main():
-    sp.random.seed()
+    sp.random.seed(dt.datetime.now().microsecond)
     process()
 
 
@@ -291,3 +335,10 @@ if __name__ == '__main__':
 #
 # for f in `ls -1 ../data/Dog_3/ | grep test_segment`; do python feed_one.py ../data/Dog_3/$f "test_segment" | ./cls_node.exe >> dog_3_result.txt ; done
 #
+
+
+
+# (cat 2.txt | grep "inter.*mat" | wc -l;  cat 2.txt | grep "inter.*mat" | grep "(0)" | wc -l) | awk 'BEGIN {I=0} {print $0" to "I; VALS[I] = $0; I=I+1;} END {print VALS[1] / VALS[0]}'
+# (cat 1.txt | grep "pre.*mat" | wc -l;  cat 1.txt | grep "pre.*mat" | grep "(1)" | wc -l) | awk 'BEGIN {I=0} {print $0" to "I; VALS[I] = $0; I=I+1;} END {print VALS[1] / VALS[0]}'
+
+

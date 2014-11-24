@@ -1,6 +1,19 @@
-// To test utils:
 //
-// g++ -O3 RF.cpp -shared -o rf.dll
+// g++ RF_sparse.cpp -shared -o rf.dll
+// g++ RF_sparse.cpp -o rf.exe
+//
+
+
+//
+// Random Forest specially adapted to work with sparse vectors
+//
+// Vector:
+// [ year, month, day, hour, <9M catecorical features> ]
+//
+// Where:
+// <9M categorical features> is just about 20 indices, each index means the feature is set (equal to "1")
+// i.e. this is the sparse part of the vector
+// This part _must_ be sorted
 //
 
 
@@ -14,7 +27,6 @@
 #include <fstream>
 #include <map>
 #include <set>
-#include <algorithm>
 
 
 
@@ -27,18 +39,25 @@ using namespace std;
 
 #define ALIGNMENT  __attribute__((aligned(16))
 
+// 9449205 total sparse features
+#define TOTAL_SPARSE_FEATURES 9449205
+#define TOTAL_FEATURES (4 + TOTAL_SPARSE_FEATURES)
+#define SPARSE_PART_SIZE 21
+#define F_IDX 4
+
 
 //
 // Utils
 //
 
-//double abs(double d) {return d > 0. ? d : -d;}
 
 
 namespace utils {
 
+double abs(double d) {return d > 0. ? d : -d;}
+
 bool equal(double v1, double v2, double e = 0.0001) {
-    if (::abs(v1 - v2) < e)
+    if (utils::abs(v1 - v2) < e)
         return true;
     return false;
 }
@@ -90,6 +109,8 @@ struct ptr {
     }
 
     T* get() {return p_;}
+
+    T* operator->() {return p_;}
 
     T& operator[] (int i) {
         return get()[i];
@@ -160,7 +181,7 @@ struct random {
         }
 
         for (int i = k; i < n; ++i) {
-            int r = randint(0, i+1);
+            int r = randint(0, i);
             if (r < k) {
                 numbers[r] = i;
             }
@@ -255,7 +276,7 @@ struct linalg {
         for (int i = 0; i < size; ++i) {
             v[i] = ::pow(v[i], scalar);
         }
-    }
+   }
 
     static void mul_and_add(double scalar, const double* __restrict__ v, double* r, int size) {
         for (int i = 0; i < size; ++i) {
@@ -475,7 +496,7 @@ struct optimize {
         linalg::sub(tmp.get(), Y, deltas.get(), rows);
 
         linalg::pow(2., deltas.get(), tmp.get(), rows);
-        *cost = (linalg::sum(tmp.get(), rows) / 2.) / M;
+       *cost = (linalg::sum(tmp.get(), rows) / 2.) / M;
 
         linalg::dot_v_to_m(deltas.get(), X, grad, rows, columns);
         linalg::div(M, grad, grad, columns);
@@ -531,6 +552,7 @@ struct optimize {
 struct node_val_base {
     virtual ~node_val_base(){};
     virtual double get_val(const double* v, int size) = 0;
+    virtual int get_val_size() = 0;
 };
 
 struct node_val_mean : public node_val_base {
@@ -544,6 +566,8 @@ struct node_val_mean : public node_val_base {
     }
     virtual ~node_val_mean() {}
 
+    virtual int get_val_size() { return 1; }
+
     virtual double get_val(const double*, int) {
         return val_;
     }
@@ -551,6 +575,7 @@ struct node_val_mean : public node_val_base {
 
 struct node_val_linear_regression : public node_val_base {
 
+    int theta_len_;
     memory::ptr<double> theta_;
 
     node_val_linear_regression(const double* X,
@@ -566,10 +591,16 @@ struct node_val_linear_regression : public node_val_base {
         theta_ = memory::ptr<double>(new double[columns+1]);
         for (int i = 0; i < columns+1; ++i)
             theta_.get()[i] = ((double)random::randint(0, 1000) / 1000.) - .5;
-        optimize::minimize_gc(theta_.get(), X, rows, columns, Y, optimize::quadratic_cost, 1000);
+        optimize::minimize_gc(theta_.get(), tmp.get(), rows, columns + 1, Y, optimize::quadratic_cost, 100);
+
+        theta_len_ = columns + 1;
     }
 
     virtual ~node_val_linear_regression() {}
+
+    virtual int get_val_size() {
+        return theta_len_;
+    }
 
     virtual double get_val(const double* v, int size) {
         if (!v)
@@ -585,6 +616,7 @@ struct node_val_linear_regression : public node_val_base {
 
 struct node_val_logistic_regression : public node_val_base {
 
+    int theta_len_;
     memory::ptr<double> theta_;
 
     node_val_logistic_regression(const double* X,
@@ -600,10 +632,16 @@ struct node_val_logistic_regression : public node_val_base {
         theta_ = memory::ptr<double>(new double[columns+1]);
         for (int i = 0; i < columns+1; ++i)
             theta_.get()[i] = ((double)random::randint(0, 1000) / 1000.) - .5;
-        optimize::minimize_gc(theta_.get(), X, rows, columns, Y, optimize::logistic_cost, 1000);
+        optimize::minimize_gc(theta_.get(), tmp.get(), rows, columns + 1, Y, optimize::logistic_cost, 1000);
+
+        theta_len_ = columns + 1;
     }
 
     virtual ~node_val_logistic_regression() {}
+
+    virtual int get_val_size() {
+        return theta_len_;
+    }
 
     virtual double get_val(const double* v, int size) {
         if (!v)
@@ -620,447 +658,576 @@ struct node_val_logistic_regression : public node_val_base {
 };
 
 
-//
-//
-//
 
-class Counter {
-    int count;
-public:
-    Counter() : count(0) {}
-
-    ~Counter() {}
-
-    int next() {
-        return count++;
-    }
-};
-
-//
-// RF split criteria
-//
-
-struct estimator_regressor {
-    double operator() (const double* __restrict__ X,
-                       const double* __restrict__ Y,
-                       int rows,
-                       int columns,
-                       int feature_idx,
-                       int lnum,
-                       double& feature_val,
-                       int& left_rows,
-                       int& right_rows)
-    {
-        double N = rows;     // number of elements in the original Y array
-        double x_min, x_max;
-        linalg::min_max(X, rows, columns, feature_idx, x_min, x_max);
-
-        double max_gain = -1.;
-        double max_val  = -1.;
-
-        int num = 500;
-        double buffer[num];
-        linalg::linspace(x_min, x_max, num, buffer);
-
-        for (int i = 0; i < num; ++i) {
-            double left_M = 0.;  // number of elements in the left part
-            double right_M = 0.; // number of elements in the right part
-
-            double mean = 0.;
-            double left_mean = 0.;
-            double right_mean = 0.;
-
-            double x = buffer[i];
-
-            for (int r = 0; r < rows; ++r) {
-                int idx = r * columns + feature_idx;
-                if (X[idx] <= x) {
-                    ++left_M;
-                    left_mean += Y[r];
-                }
-                else {
-                    ++right_M;
-                    right_mean += Y[r];
-                }
-                mean += Y[r];
-            }
-
-            if (lnum > left_M || lnum > right_M)
-                continue;
-
-            mean /= N;
-            left_mean /= left_M;
-            right_mean /= right_M;
-
-
-            double sum = 0.;
-            double left_sum = 0.;
-            double right_sum = 0.;
-
-            for (int r = 0; r < rows; ++r) {
-                int idx = r * columns + feature_idx;
-                if (X[idx] <= x) {
-                    left_sum += (Y[r] - left_mean)*(Y[r] - left_mean);
-                }
-                else {
-                    right_sum += (Y[r] - right_mean)*(Y[r] - right_mean);
-                }
-                sum += (Y[r] - mean)*(Y[r] - mean);
-            }
-
-            double gain = sum - (left_sum + right_sum);
-            if (/*!isnan(gain) &&  !isinf(gain) &&*/ (max_gain == -1 || max_gain < gain)) {
-                max_gain = gain;
-                max_val  = x;
-                left_rows = left_M;
-                right_rows = right_M;
-            }
-        }
-
-        feature_val = max_val;
-        return max_gain;
-    }
-};
-
-/*
- * Decision tree class
- */
-template<class ESTIMATOR=estimator_regressor, class NODE_VAL=node_val_mean>
-class dtree {
-    memory::ptr<Counter> counter_;
-
-    int k_;
-    int lnum_;
-    dtree* left_;
-    dtree* right_;
-
-    int feature_idx_;
-    double feature_val_;
-
-    node_val_base* pVal_;
-
-    int id_;
-
-public:
-    dtree() :
-        counter_(new Counter()),
-        k_(1),
-        lnum_(2),
-        left_(NULL),
-        right_(NULL),
-        feature_idx_(-1),
-        feature_val_(-1.),
-        pVal_(NULL),
-        id_(counter_.get()->next())
-    {}
-
-    dtree(int k, int lnum, memory::ptr<Counter>& counter) :
-        counter_(counter),
-        k_(k),
-        lnum_(lnum),
-        left_(NULL),
-        right_(NULL),
-        feature_idx_(-1),
-        feature_val_(-1.),
-        pVal_(NULL),
-        id_(counter_.get()->next())
-    {}
-
-    ~dtree() {
-        free();
-    }
-
-    void asarray(map<int, vector<double> >& node_set) {
-        vector<double> res;
-        if (-1 != feature_idx_) {
-            res.push_back(0);
-            res.push_back(id_);
-            res.push_back(feature_idx_);
-            res.push_back(feature_val_);
-            res.push_back(left_->id_);
-            res.push_back(right_->id_);
-
-            node_set[id_] = res;
-
-            left_->asarray(node_set);
-            right_->asarray(node_set);
-        }
-        else{
-            res.push_back(1);
-            res.push_back(id_);
-            res.push_back(pVal_->get_val(NULL, 0));
-            res.push_back(0);
-            res.push_back(0);
-            res.push_back(0);
-
-            node_set[id_] = res;
-        }
-    }
-
-    ostream& print(ostream& os) {
-        map<int, vector<double> > node_set;
-        asarray(node_set);
-
-        for (map<int, vector<double> >::iterator it = node_set.begin(); it != node_set.end(); ++it) {
-            vector<double>& vec = it->second;
-
-            os << "  {";
-            for (int i = 0; i < 6; ++i) {
-                os << vec[i] << ", ";
-            }
-            os << "}," << endl;
-        }
-
-        return os;
-    }
-
-
-    void free() {
-        if (pVal_) {
-            delete pVal_;
-            pVal_ = NULL;
-        }
-
-        if (left_) {
-            left_->free();
-            delete left_;
-            left_ = NULL;
-        }
-
-        if (right_) {
-            right_->free();
-            delete right_;
-            right_ = NULL;
-        }
-    }
-
-    void set_K(int k) { k_ = k; }
-    void set_LNUM(int lnum) { lnum_ = lnum; }
-
-
-    void get_best_split(const double* __restrict__ X,
-                        const double* __restrict__ Y,
-                        int rows,
-                        int columns,
-                        int& best_feature_idx, double& best_val, double& best_score, int* feature_indices) {
-
-        ESTIMATOR split;
-
-        for (int f = 0; f < k_; ++f) {
-            int feature_idx = feature_indices[f];
-
-            double fature_val;
-            int left_rows = 0, right_rows = 0;
-
-            double score = split(X, Y, rows, columns, feature_idx, lnum_, fature_val, left_rows, right_rows);
-
-            if (score != -1 && (best_score == -1 || score > best_score)) {
-                best_feature_idx = feature_idx;
-                best_val = fature_val;
-                best_score = score;
-            }
-        }
-    }
-
-
-    void fit(const double* __restrict__ X,
-             const double* __restrict__ Y,
-             int rows,
-             int columns) {
-
-        // select features
-        int feature_indices[k_];
-        random::get_k_of_n(k_, columns, feature_indices);
-
-
-        // select the best split
-        int    best_feature_idx = -1;
-        double best_val         = -1;
-        double best_score       = -1;
-        get_best_split(X, Y, rows, columns, best_feature_idx, best_val, best_score, feature_indices);
-
-
-        // split the node
-        if (-1 != best_feature_idx) {
-            feature_idx_ = best_feature_idx;
-            feature_val_ = best_val;
-
-            left_ = new dtree<ESTIMATOR, NODE_VAL>(k_, lnum_, counter_);
-            right_ = new dtree<ESTIMATOR, NODE_VAL>(k_, lnum_, counter_);
-
-            double *leftX, *leftY;
-            double *rightX, *rightY;
-            int left_rows, right_rows;
-            linalg::split_array(X, Y, rows, columns, feature_idx_, feature_val_, &leftX, &leftY, left_rows, &rightX, &rightY, right_rows);
-
-
-            left_->fit(leftX, leftY, left_rows, columns);
-            right_->fit(rightX, rightY, right_rows, columns);
-
-            delete [] leftX;
-            delete [] leftY;
-            delete [] rightX;
-            delete [] rightY;
-        }
-        else {
-            // for now I use mean for regression
-            pVal_ = new NODE_VAL(X, Y, rows, columns);
-        }
-    }
-
-    double predict(const double* v, int size) {
-        if (-1 != feature_idx_) {
-            if (v[feature_idx_] <= feature_val_)
-                return left_->predict(v, size);
-            else
-                return right_->predict(v, size);
-        }
-
-        return pVal_->get_val(v, size);
-    }
-
-private:
-
-};
 
 
 //
 // RandomForest
 //
 
-template<class ESTIMATOR, class NODE_VAL>
-class RF {
-    int TREES;
+
+
+
+double get_x_val(const double* x, int feature_index) {
+
+    double val = 0.;
+
+    if (feature_index < F_IDX) {
+        // fixed part
+        val = x[ feature_index ];
+    }
+    else {
+        // sparse part
+        const double* first = &x[F_IDX];
+        const double* last = &x[F_IDX + SPARSE_PART_SIZE];
+        const double* px = std::lower_bound(first, last, feature_index);
+        if (px != last && *px == feature_index) {
+            val = 1.;
+        }
+        else {
+            val = 0.;
+        }
+    }
+
+    return val;
+}
+
+
+
+//
+// Fast dtree
+//
+
+class dtree_node {
     int K;
     int LNUM;
 
-    dtree<ESTIMATOR, NODE_VAL>* forest;
 
 public:
-    RF(int trees, int k, int lnum) :
-        TREES(trees),
-        K(k),
-        LNUM(lnum)
-    {
-        forest = new dtree<ESTIMATOR, NODE_VAL>[TREES];
-        for (int t = 0; t < TREES; ++t) {
-            forest[t].set_K(K);
-            forest[t].set_LNUM(LNUM);
-        }
-    }
-
-    ~RF() {
-        delete [] forest;
-    }
-
-    void fit(const double* __restrict__ X,
-             const double* __restrict__ Y,
-             int rows,
-             int columns) {
-
-        int bs_rows = (int)(rows * .8);     // bootstrap rows
-        memory::ptr<double> new_X = linalg::zeros(bs_rows * columns);
-        memory::ptr<double> new_Y = linalg::zeros(bs_rows);
-
-        for (int t = 0; t < TREES; ++t) {
-            //LOG("Fit tree #" << t)
-            linalg::bootstrap(X, Y, rows, columns, new_X.get(), new_Y.get(), bs_rows);
-
-            dtree<ESTIMATOR, NODE_VAL>& tree = forest[t];
-            tree.fit(new_X.get(), new_Y.get(), bs_rows, columns);
-        }
-    }
-
-    double predict(const double* __restrict__ v, int size) {
-        double p = 0.;
-
-        for (int t = 0; t < TREES; ++t) {
-            //LOG("Predict tree #" << t)
-            p += forest[t].predict(v, size);
-        }
-
-        return p / TREES;
-    }
-
-    ostream& print(ostream& os) {
-        os << "namespace RF {" << endl;
-        os << "const int VEC_SIZE = 6;" << endl;
-        os << "const int TREES = " << TREES << ";" << endl;
-
-        for (int t = 0; t < TREES; ++t) {
-            os << "double tree_" << t << "[][VEC_SIZE] = {" << endl;
-            forest[t].print(os);
-            os << "};" << endl;
-        }
-
-        os << "double* forest[] = {";
-        for (int t = 0; t < TREES; ++t) {
-            os << "&tree_" << t << "[0][0], ";
-        }
-        os << "};" << endl;
-
-        //os << "};   // RF" << endl;
-
-        return os;
-    }
-
+    dtree_node(int kf, int ln) :
+        K(kf),
+        LNUM(ln)
+    {}
 
 private:
-    RF(const RF&);
-    RF& operator= (const RF&);
+    struct data {
+        data() :
+            count(0),
+            idx(-1),
+            x_val(-1.),
+            y_sum(0.),
+            y_sum_squared(0.)
+        {}
+
+        int count;
+        int idx;
+        double x_val;
+        double y_sum;
+        double y_sum_squared;
+    };
+
+    struct split_data {
+        vector<int> indices;
+        vector<std::map<double, data> > accums;
+
+        void clear() {
+            indices.clear();
+            accums.clear();
+        }
+    };
+
+
+    // temporary data for splitting a node
+    split_data sd_;
+
+    double total_y_sum;
+    double total_y_sum_squared;
+    double total_count;
+
+    int node_vector_idx;
+
+public:
+    void set_node_vector_idx(int idx) { node_vector_idx = idx; }
+    int get_node_vector_idx() const { return node_vector_idx; }
+
+    double get_mean() const { return total_y_sum / total_count; }
+    int get_count() const { return total_count; }
+
+    void start_splitting(int* indices) {
+        sd_.clear();
+
+        for (int i = 0; i < K; ++i) {
+            sd_.indices.push_back(indices[i]);
+            sd_.accums.push_back(std::map<double, data>());
+        }
+
+        total_y_sum = 0.;
+        total_y_sum_squared = 0.;
+        total_count = 0;
+    }
+
+    void process_splitting(const double* x, double y) {
+        // go through all selected features and take its values
+        for (int i = 0; i < K; ++i) {
+            int feature_index = sd_.indices[i];
+
+            // value of the current feature
+            double val = get_x_val(x, feature_index);
+
+            typename std::map<double, data>::iterator result = sd_.accums[i].find(val);
+            if (sd_.accums[i].end() == result) {
+                data d;
+                d.idx = feature_index;
+                d.x_val = val;
+                d.count = 1;
+                d.y_sum = y;
+                d.y_sum_squared = y * y;
+                sd_.accums[i].insert(std::pair<double, data>(val, d));
+            }
+            else {
+                data& d = result->second;
+                d.count += 1;
+                d.y_sum += y;
+                d.y_sum_squared += y * y;
+            }
+
+        }
+
+        total_y_sum += y;
+        total_y_sum_squared += y * y;
+        total_count += 1;
+    }
+
+    void stop_splitting(int* idx, double* val, double* gain) {
+        int best_idx = -1;
+        double best_val = -1.;
+        double best_gain = -1.;
+
+        for (int i = 0; i < K; ++i) {
+            // latest element contains sums for total set
+
+            double mean = total_y_sum / total_count;
+            double mean_squared = mean * mean;
+
+            //
+            double left_sum_accum = 0.;
+            double right_sum_accum = 0.;
+            double left_sum_squared_accum = 0.;
+            double right_sum_squared_accum = 0.;
+            int left_count_accum = 0;
+            int right_count_accum = 0;
+
+            // this will go from the smallest value to the biggest one
+            for (typename std::map<double, data>::iterator it = sd_.accums[i].begin(); it != sd_.accums[i].end(); ++it) {
+                data& d = it->second;
+
+                left_sum_accum += d.y_sum;
+                right_sum_accum = (total_y_sum - left_sum_accum);
+                left_sum_squared_accum += d.y_sum_squared;
+                right_sum_squared_accum = (total_y_sum_squared - left_sum_squared_accum);
+
+                left_count_accum += d.count;
+                right_count_accum = ((int)total_count - left_count_accum);
+
+                double left_mean = left_sum_accum / left_count_accum;
+                double right_mean = right_sum_accum / right_count_accum;
+
+                double left_mean_squared = left_mean * left_mean;
+                double right_mean_squared = right_mean * right_mean;
+
+                double g = (total_y_sum_squared + mean_squared * total_count - 2. * mean * total_y_sum) -
+                           (left_sum_squared_accum + left_mean_squared * left_count_accum - 2. * left_mean * left_sum_accum) -
+                           (right_sum_squared_accum + right_mean_squared * right_count_accum - 2. * right_mean * right_sum_accum);
+                if (!isnan(g) && g > 0. && (/*best_idx == -1 ||*/ g > best_gain)) {
+                    if (LNUM <= left_count_accum && LNUM <= right_count_accum) {
+                        best_idx = d.idx;
+                        best_val = d.x_val;
+                        best_gain = g;
+
+//LOG((total_y_sum_squared + mean_squared * total_count - 2. * mean * total_y_sum))
+//LOG((left_sum_squared_accum + left_mean_squared * left_count_accum - 2. * left_mean * left_sum_accum))
+//LOG((right_sum_squared_accum + right_mean_squared * right_count_accum - 2. * right_mean * right_sum_accum))
+//LOG(best_idx << "; " << best_val << "; " << best_gain)
+                    }
+                }
+            }
+        }
+
+        *idx = best_idx;
+        *val = best_val;
+        *gain = best_gain;
+
+        sd_.clear();
+    }
+
+};
+
+
+class dtree {
+public:
+    enum {
+        LEAF = 0,
+        NON_LEAF = 1,
+        SPLITTING = 2,
+
+        VEC_LEN = 6,
+        DATA_LEN = 0,
+
+        ID_IDX = 0,
+        CLS_IDX = 1,
+        DATA_IDX = 2,
+        IDX_IDX = 2,
+        VAL_IDX = 3,
+        LEFT_IDX = 4,
+        RIGHT_IDX = 5,
+    };
+
+protected:
+    // vector of length VEC_LEN: leaf [node_id, class, data, ...] or intermediate node [node_id, class, idx, val, left, right]
+    vector<double> tree_;
+
+public:
+    dtree() : tree_() {}
+    virtual ~dtree() {}
+
+
+    void tofile(const char* fname) {
+        FILE* fd = fopen(fname, "wb+");
+        for (int i = 0; i < tree_.size(); ++i) {
+            fwrite(&tree_[i], sizeof(double), 1, fd);
+        }
+
+        fclose(fd);
+    }
+
+    void fromfile(const char* fname) {
+        tree_.clear();
+
+        FILE* fd = fopen(fname, "rb");
+        while(!feof(fd)) {
+            double d;
+            fread(&d, sizeof(double), 1, fd);
+            tree_.push_back(d);
+        }
+        fclose(fd);
+    }
+
+    void print() {
+        int num = tree_.size() / dtree::VEC_LEN;
+
+        //cout.precision(15);
+
+        cout << "// DTree array" << endl;
+        cout << "int dtree_array_size = " << tree_.size() << ";" << endl;
+        cout << "double dtree_array[] = {" << endl;
+        for (int i = 0; i < num; ++i) {
+            cout //<< std::fixed
+                 << tree_[i * dtree::VEC_LEN + 0] << ","
+                 << tree_[i * dtree::VEC_LEN + 1] << ","
+                 << tree_[i * dtree::VEC_LEN + 2] << ","
+                 << tree_[i * dtree::VEC_LEN + 3] << ","
+                 << tree_[i * dtree::VEC_LEN + 4] << ","
+                 << tree_[i * dtree::VEC_LEN + 5] << "," << endl;
+        }
+        cout << "};" << endl;
+        cout << "// END of DTree array" << endl;
+    }
+
+    double predict(const double* x) {
+        if (!tree_.size())
+            return 0.;
+
+        double val = 0.;
+        int start_idx = 0;
+
+        while (true) {
+            double* node = &tree_[start_idx];
+
+            if (dtree::LEAF == node[CLS_IDX]) {
+                val = node[DATA_IDX];
+                break;
+            }
+            else {
+                double val = get_x_val(x, (int)node[IDX_IDX]);
+
+                if (val <= node[VAL_IDX]) {
+                    start_idx = (int)node[LEFT_IDX] * dtree::VEC_LEN;
+                }
+                else {
+                    start_idx = (int)node[RIGHT_IDX] * dtree::VEC_LEN;
+                }
+            }
+        }
+
+        return val;
+    }
+};
+
+
+class dtree_learner : public dtree {
+    map<int, dtree_node> nodes_;
+
+    int COLUMN_NUMBER;
+    int K;
+    int LNUM;
+
+
+    int add_node(map<int, dtree_node>& nodes) {
+        int nodes_num = tree_.size() / dtree::VEC_LEN;
+        int new_id = nodes_num;
+
+        tree_.push_back(new_id);
+        tree_.push_back(dtree::SPLITTING);
+        tree_.push_back(-1);    // idx
+        tree_.push_back(-1);    // val
+        tree_.push_back(-1);    // left
+        tree_.push_back(-1);    // right
+
+        // and node for this new splitting node
+        int indices[K];
+        random::get_k_of_n(K, COLUMN_NUMBER, &indices[0]);
+
+        dtree_node root(K, LNUM);
+        root.set_node_vector_idx(new_id);
+        root.start_splitting(indices);
+
+        nodes.insert(pair<int, dtree_node>(new_id, root));
+
+        return new_id;
+    }
+
+    bool get_node(const double* x, dtree_node** node) {
+        int nodes_num = tree_.size() / VEC_LEN;
+        if (!nodes_num) {
+            add_node(nodes_);
+        }
+
+        bool result = true;
+        int start_idx = 0;
+
+        while (true) {
+            double *vec = &tree_[start_idx];
+
+            if (dtree::SPLITTING == vec[CLS_IDX]) {
+                // found, get the object
+                map<int, dtree_node>::iterator it = nodes_.find(vec[ID_IDX]);
+                *node = &it->second;
+                break;
+            }
+            else if (dtree::LEAF == vec[CLS_IDX]) {
+                // nothing to return for learning
+                result = false;
+                break;
+            }
+            else {
+                // go down
+                int idx = (int)vec[IDX_IDX];
+                double val = vec[VAL_IDX];
+                double x_val = get_x_val(x, idx);
+
+                if (x_val <= val) {
+                    start_idx = (int)vec[LEFT_IDX] * dtree::VEC_LEN;
+                }
+                else {
+                    start_idx = (int)vec[RIGHT_IDX] * dtree::VEC_LEN;
+                }
+            }
+        }
+
+        return result;
+    }
+
+public:
+    dtree_learner(int column_number, int kf, int lnum) :
+        nodes_(),
+        COLUMN_NUMBER(column_number),
+        K(kf),
+        LNUM(lnum)
+    {}
+
+    void start_fit() {
+        random::seed();
+        nodes_.clear();
+    }
+
+    void process_fit(const double* x, double y) {
+        dtree_node* node = NULL;
+        if (get_node(x, &node)) {
+            node->process_splitting(x, y);
+        }
+    }
+
+    void stop_splitting() {
+        map<int, dtree_node> new_nodes;
+
+        for (map<int, dtree_node>::iterator it = nodes_.begin(); it != nodes_.end(); ++it) {
+            int idx;
+            double val;
+            double gain;
+
+            dtree_node& node = it->second;
+
+            node.stop_splitting(&idx, &val, &gain);
+            if (-1 == idx) {
+                // cannot split, make a leaf
+                int id = it->first;
+                int start_idx = id * dtree::VEC_LEN;
+                double* vec = &tree_[start_idx];
+
+                vec[CLS_IDX] = dtree::LEAF;
+                vec[DATA_IDX] = node.get_mean();
+                vec[5] = node.get_count();          // for testing only
+            }
+            else {
+                // make an intermediate node
+                int id = it->first;
+                int start_idx = id * dtree::VEC_LEN;
+                double* vec = &tree_[start_idx];
+
+                vec[CLS_IDX] = dtree::NON_LEAF;
+                vec[IDX_IDX] = idx;
+                vec[VAL_IDX] = val;
+
+                int new_left_id = add_node(new_nodes);
+                int new_right_id = add_node(new_nodes);
+
+                // it's possible having invalidated iterators here, so I go via tree_ directly
+                tree_[start_idx + LEFT_IDX] = new_left_id;
+                tree_[start_idx + RIGHT_IDX] = new_right_id;
+            }
+        }
+
+        nodes_.swap(new_nodes);
+    }
+
+    bool need_splitting() {
+        return nodes_.size();
+    }
 };
 
 
 
-RF<estimator_regressor, node_val_mean> *pRF = NULL;
-//RF<estimator_regressor, node_val_logistic_regression> *pRF = NULL;
 
+
+
+
+/////////////////////////////////////////////////////////////////////////
+// Testing
+/////////////////////////////////////////////////////////////////////////
+
+
+
+void test1() {
+
+    cout << "TEST 1" << endl;
+
+    int N = 10;
+    int C = 25;
+
+    double X[] = {
+        14,10,31,23,2,8,4172,8644,12520,20406,21328,21633,1801941,3099127,9445805,9445815,9445819,9446101,9448453,9448463,9448530,9448903,9448939,9448986,9449183,
+        14,10,31,23,2,7,2508,10751,12502,17621,21552,21637,1801941,8959319,9443055,9445815,9445819,9446489,9448453,9448463,9448597,9448904,9448918,9448973,9449191,
+        14,10,31,23,-1,2,7,2508,10751,12502,21032,21356,21637,1801941,5676658,9444253,9445815,9445819,9448453,9448463,9448640,9448904,9448933,9449059,9449191,
+        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,4432375,9439459,9445815,9445819,9447157,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
+        14,10,31,23,2,7,2508,10751,12502,17265,21552,21637,1801941,6174798,9442553,9445815,9445819,9446682,9448453,9448463,9448640,9448904,9448933,9449059,9449191,
+        14,10,31,23,2,7,2755,8417,12500,20406,21328,21633,1801941,7672303,9441850,9445815,9445819,9446095,9448452,9448459,9448533,9448903,9448939,9448973,9449183,
+        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,3547319,9444512,9445815,9445819,9447033,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
+        14,10,31,23,2,7,1762,8417,12500,20406,21328,21633,1801941,7755280,9444294,9445815,9445819,9446095,9448452,9448459,9448533,9448903,9448939,9448973,9449183,
+        14,10,31,23,-1,-1,2,7,2508,10751,12502,17426,21452,21637,1801941,5415650,9437724,9445815,9445821,9448453,9448463,9448902,9448923,9449116,9449195,
+        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,3193482,9442752,9445815,9445819,9447150,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
+    };
+    double Y[] = {0., 1., 1., 1., 1., 1., 1., 1., 1., 1.};
+
+    dtree_learner t(TOTAL_FEATURES, 3500, 1);
+    t.start_fit();
+
+    while (true) {
+        for (int i = 0; i < N; ++i) {
+            t.process_fit(&X[i*C], Y[i]);
+        }
+        t.stop_splitting();
+        if (!t.need_splitting()) {
+            break;
+        }
+    }
+
+    double* v = &X[0*C];
+    double p = t.predict(v);
+    LOG("predict(0) == " << p)
+
+    v = &X[1*C];
+    p = t.predict(v);
+    LOG("predict(1) == " << p)
+
+    t.print();
+
+    t.tofile("c:\\Temp\\rf.b");
+}
+
+
+int main() {
+
+    test1();
+
+    return 0;
+}
+
+//
+// C stype interface for Python
+//
 
 extern "C" {
 
+    void predict(void* ptree, double* x, double* p) {
+        *p = static_cast<dtree*>(ptree)->predict(x);
+    }
 
-int alloc_rf(int trees, int k, int lnum) {
+    void* alloc_tree_learner(int columns, int k, int lnum) {
+        return new dtree_learner(TOTAL_FEATURES, k, lnum);
+    }
 
-    if (pRF)
-        delete pRF;
+    void* alloc_tree() {
+        return new dtree();
+    }
 
-    pRF = new RF<estimator_regressor, node_val_mean>(trees, k, lnum);
-    //pRF = new RF<estimator_regressor, node_val_logistic_regression>(trees, k, lnum);
+    void free_tree(void* ptree) {
+        delete (dtree*)ptree;
+    }
 
-}
+    void fromfile_tree(void* ptree, const char* fname) {
+        static_cast<dtree*>(ptree)->fromfile(fname);
+    }
+
+    void tofile_tree(void* ptree, const char* fname) {
+        static_cast<dtree*>(ptree)->tofile(fname);
+    }
+
+    void print_tree(void* ptree) {
+        static_cast<dtree*>(ptree)->print();
+    }
+
+    void start_fit_tree(void* ptree) {
+        static_cast<dtree_learner*>(ptree)->start_fit();
+    }
+
+    void fit_tree(void* ptree, double* x, double y) {
+        static_cast<dtree_learner*>(ptree)->process_fit(x, y);
+    }
+
+    void stop_fit_tree(void* ptree) {
+        static_cast<dtree_learner*>(ptree)->stop_splitting();
+    }
+
+    int end_of_splitting(void* ptree) {
+        return (int)(false == static_cast<dtree_learner*>(ptree)->need_splitting());
+    }
+
+};   // END of extern "C"
 
 
-int dealloc_rf() {
-    if (!pRF)
-        return 0;
-
-    delete pRF;
-    pRF = NULL;
-
-    return 1;
-}
-
-int fit_rf(const double* X, const double* Y, int rows, int columns) {
-    if (!pRF)
-        return 0;
-
-    pRF->fit(X, Y, rows, columns);
-
-    return 1;
-}
 
 
-int predict_rf(const double* v, int size, double* p) {
-    if (!pRF)
-        return 0;
 
-    *p = pRF->predict(v, size);
-
-    return 1;
-}
-
-
-}
 
 
 

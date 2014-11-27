@@ -14,16 +14,21 @@ features = [None] * DICT_NUM
 
 
 def load_features():
-    ID = 0
+    max_id = -1
     for i in range(DICT_NUM):
         features[i] = {}
         fn = pathes.path_data + "data%d.txt" % (i+4)
         with open(fn, 'r') as fin:
+            ID = 0
             for line in fin:
                 line = line.strip()
                 features[i][line] = ID
                 ID += 1
+                if max_id < ID:
+                    max_id = ID
         print "# loading features IDs from", fn
+
+    print "# max ID ", max_id
 
 
 
@@ -48,7 +53,7 @@ def write(fout, vec):
 
 def vectorize(name):
     # Feature vector:
-    # [ ad ID, click, vec ID, year, month, day, hour, <9M catecorical features> ]
+    # [ ID, click, year, month, day, hour, <24 categorical features> ]
     #
     # For categorical features I will only have 23 indices
 
@@ -96,10 +101,15 @@ def vectorize(name):
 
                 cnt += 1
 
-                ff.sort()
-                vec[F_IDX:] = ff
-                write(fout, vec)
+                ##ff.sort()
+                vec[F_IDX:F_IDX+DICT_NUM] = ff
 
+                # padding - so I have 32 int items in an array
+                vec.extend([0,0,0,0,0])
+
+                write(fout, vec)
+            # end for line
+            print "# done,", cnt, "lines were written"
 
 def main():
     load_features()

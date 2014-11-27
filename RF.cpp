@@ -1,19 +1,8 @@
 //
-// g++ RF_sparse.cpp -shared -o rf.dll
-// g++ RF_sparse.cpp -o rf.exe
+// g++ RF.cpp -shared -o rf.dll
+// g++ RF.cpp -o rf.exe
 //
-
-
-//
-// Random Forest specially adapted to work with sparse vectors
-//
-// Vector:
-// [ year, month, day, hour, <9M catecorical features> ]
-//
-// Where:
-// <9M categorical features> is just about 20 indices, each index means the feature is set (equal to "1")
-// i.e. this is the sparse part of the vector
-// This part _must_ be sorted
+// g++ -O3 RF.cpp -shared -o librf.so
 //
 
 
@@ -38,12 +27,6 @@ using namespace std;
 
 
 #define ALIGNMENT  __attribute__((aligned(16))
-
-// 9449205 total sparse features
-#define TOTAL_SPARSE_FEATURES 9449205
-#define TOTAL_FEATURES (4 + TOTAL_SPARSE_FEATURES)
-#define SPARSE_PART_SIZE 21
-#define F_IDX 4
 
 
 //
@@ -668,48 +651,12 @@ struct node_val_logistic_regression : public node_val_base {
 
 
 
-double get_x_val(const double* x, int feature_index) {
-
-    double val = 0.;
-
-    if (feature_index < F_IDX) {
-        // fixed part
-        val = x[ feature_index ];
-    }
-    else {
-        // sparse part
-        const double* first = &x[F_IDX];
-        const double* last = &x[F_IDX + SPARSE_PART_SIZE];
-        const double* px = std::lower_bound(first, last, feature_index);
-        if (px != last && *px == feature_index) {
-            val = 1.;
-        }
-        else {
-            val = 0.;
-        }
-    }
-
-    return val;
-}
-
-
 
 //
 // Fast dtree
 //
 
 class dtree_node {
-    int K;
-    int LNUM;
-
-
-public:
-    dtree_node(int kf, int ln) :
-        K(kf),
-        LNUM(ln)
-    {}
-
-private:
     struct data {
         data() :
             count(0),
@@ -736,8 +683,9 @@ private:
         }
     };
 
+    int K;
+    int LNUM;
 
-    // temporary data for splitting a node
     split_data sd_;
 
     double total_y_sum;
@@ -747,6 +695,15 @@ private:
     int node_vector_idx;
 
 public:
+    dtree_node(int kf, int ln) :
+        K(kf),
+        LNUM(ln),
+        sd_(),
+        total_y_sum(0.),
+        total_y_sum_squared(0.),
+        total_count(0.)
+    {}
+
     void set_node_vector_idx(int idx) { node_vector_idx = idx; }
     int get_node_vector_idx() const { return node_vector_idx; }
 
@@ -769,15 +726,13 @@ public:
     void process_splitting(const double* x, double y) {
         // go through all selected features and take its values
         for (int i = 0; i < K; ++i) {
-            int feature_index = sd_.indices[i];
-
             // value of the current feature
-            double val = get_x_val(x, feature_index);
-
+            double val = x[ sd_.indices[i] ];
             typename std::map<double, data>::iterator result = sd_.accums[i].find(val);
+
             if (sd_.accums[i].end() == result) {
                 data d;
-                d.idx = feature_index;
+                d.idx = sd_.indices[i];
                 d.x_val = val;
                 d.count = 1;
                 d.y_sum = y;
@@ -790,7 +745,6 @@ public:
                 d.y_sum += y;
                 d.y_sum_squared += y * y;
             }
-
         }
 
         total_y_sum += y;
@@ -829,8 +783,8 @@ public:
                 left_count_accum += d.count;
                 right_count_accum = ((int)total_count - left_count_accum);
 
-                double left_mean = left_sum_accum / left_count_accum;
-                double right_mean = right_sum_accum / right_count_accum;
+                double left_mean = left_count_accum ? left_sum_accum / left_count_accum : 0.;
+                double right_mean = right_count_accum ? right_sum_accum / right_count_accum : 0.;
 
                 double left_mean_squared = left_mean * left_mean;
                 double right_mean_squared = right_mean * right_mean;
@@ -838,7 +792,14 @@ public:
                 double g = (total_y_sum_squared + mean_squared * total_count - 2. * mean * total_y_sum) -
                            (left_sum_squared_accum + left_mean_squared * left_count_accum - 2. * left_mean * left_sum_accum) -
                            (right_sum_squared_accum + right_mean_squared * right_count_accum - 2. * right_mean * right_sum_accum);
-                if (!isnan(g) && g > 0. && (/*best_idx == -1 ||*/ g > best_gain)) {
+
+        		// sanity check
+        		if (isnan(g)) {
+        			LOG("# ERROR: gain is nan, feature: " << i << ", feature idx: " << d.idx)
+        			LOG("# ERROR: left count: " << left_count_accum << ", right count: " << right_count_accum)
+        		}
+
+                if (g > 0. && (/*best_idx == -1 ||*/ g > best_gain)) {
                     if (LNUM <= left_count_accum && LNUM <= right_count_accum) {
                         best_idx = d.idx;
                         best_val = d.x_val;
@@ -915,14 +876,11 @@ public:
     void print() {
         int num = tree_.size() / dtree::VEC_LEN;
 
-        //cout.precision(15);
-
         cout << "// DTree array" << endl;
         cout << "int dtree_array_size = " << tree_.size() << ";" << endl;
         cout << "double dtree_array[] = {" << endl;
         for (int i = 0; i < num; ++i) {
-            cout //<< std::fixed
-                 << tree_[i * dtree::VEC_LEN + 0] << ","
+            cout << tree_[i * dtree::VEC_LEN + 0] << ","
                  << tree_[i * dtree::VEC_LEN + 1] << ","
                  << tree_[i * dtree::VEC_LEN + 2] << ","
                  << tree_[i * dtree::VEC_LEN + 3] << ","
@@ -948,9 +906,7 @@ public:
                 break;
             }
             else {
-                double val = get_x_val(x, (int)node[IDX_IDX]);
-
-                if (val <= node[VAL_IDX]) {
+                if (x[ (int)node[IDX_IDX] ] <= node[VAL_IDX]) {
                     start_idx = (int)node[LEFT_IDX] * dtree::VEC_LEN;
                 }
                 else {
@@ -1001,7 +957,7 @@ class dtree_learner : public dtree {
         if (!nodes_num) {
             add_node(nodes_);
         }
-
+//LOG("Root added")
         bool result = true;
         int start_idx = 0;
 
@@ -1023,9 +979,7 @@ class dtree_learner : public dtree {
                 // go down
                 int idx = (int)vec[IDX_IDX];
                 double val = vec[VAL_IDX];
-                double x_val = get_x_val(x, idx);
-
-                if (x_val <= val) {
+                if (x[idx] <= val) {
                     start_idx = (int)vec[LEFT_IDX] * dtree::VEC_LEN;
                 }
                 else {
@@ -1076,7 +1030,7 @@ public:
 
                 vec[CLS_IDX] = dtree::LEAF;
                 vec[DATA_IDX] = node.get_mean();
-                vec[5] = node.get_count();          // for testing only
+                vec[5] = node.get_count();
             }
             else {
                 // make an intermediate node
@@ -1091,7 +1045,8 @@ public:
                 int new_left_id = add_node(new_nodes);
                 int new_right_id = add_node(new_nodes);
 
-                // it's possible having invalidated iterators here, so I go via tree_ directly
+                //vec[LEFT_IDX] = new_left_id;
+                //vec[RIGHT_IDX] = new_right_id;
                 tree_[start_idx + LEFT_IDX] = new_left_id;
                 tree_[start_idx + RIGHT_IDX] = new_right_id;
             }
@@ -1125,20 +1080,21 @@ void test1() {
     int C = 25;
 
     double X[] = {
-        14,10,31,23,2,8,4172,8644,12520,20406,21328,21633,1801941,3099127,9445805,9445815,9445819,9446101,9448453,9448463,9448530,9448903,9448939,9448986,9449183,
-        14,10,31,23,2,7,2508,10751,12502,17621,21552,21637,1801941,8959319,9443055,9445815,9445819,9446489,9448453,9448463,9448597,9448904,9448918,9448973,9449191,
-        14,10,31,23,-1,2,7,2508,10751,12502,21032,21356,21637,1801941,5676658,9444253,9445815,9445819,9448453,9448463,9448640,9448904,9448933,9449059,9449191,
-        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,4432375,9439459,9445815,9445819,9447157,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
-        14,10,31,23,2,7,2508,10751,12502,17265,21552,21637,1801941,6174798,9442553,9445815,9445819,9446682,9448453,9448463,9448640,9448904,9448933,9449059,9449191,
-        14,10,31,23,2,7,2755,8417,12500,20406,21328,21633,1801941,7672303,9441850,9445815,9445819,9446095,9448452,9448459,9448533,9448903,9448939,9448973,9449183,
-        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,3547319,9444512,9445815,9445819,9447033,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
-        14,10,31,23,2,7,1762,8417,12500,20406,21328,21633,1801941,7755280,9444294,9445815,9445819,9446095,9448452,9448459,9448533,9448903,9448939,9448973,9449183,
-        14,10,31,23,-1,-1,2,7,2508,10751,12502,17426,21452,21637,1801941,5415650,9437724,9445815,9445821,9448453,9448463,9448902,9448923,9449116,9449195,
-        14,10,31,23,-1,2,7,12090,12520,20406,21328,21633,1801941,3193482,9442752,9445815,9445819,9447150,9448453,9448463,9448694,9448901,9448947,9449038,9449175,
+        14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 8539971, 9439754, 9445819, 9445824, 9446014, 9448457, 9448467, 9448500, 9448905, 9448941, 9448977, 9449201, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 6666616, 9441179, 9445819, 9445823, 9446012, 9448457, 9448467, 9448500, 9448905, 9448941, 9449042, 9449201, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 7436606, 9442027, 9445819, 9445823, 9446012, 9448457, 9448467, 9448500, 9448905, 9448941, 9449042, 9449201, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 8811694, 9440730, 9445819, 9445823, 9446014, 9448457, 9448467, 9448500, 9448905, 9448941, 9449042, 9449201, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 12, 4713, 9211, 12500, 20410, 21332, 21637, 1801945, 6660464, 9441402, 9445819, 9445823, 9446319, 9448457, 9448467, 9448553, 9448905, 9448941, 9448977, 9449164, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 3966, 10472, 12524, 20410, 21332, 21637, 1801945, 2842725, 9442027, 9445819, 9445823, 9446065, 9448457, 9448467, 9448520, 9448905, 9448951, 9449036, 9449159, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 2696, 5948, 12524, 20410, 21332, 21637, 1801945, 7399073, 9443645, 9445819, 9445823, 9446468, 9448457, 9448467, 9448595, 9448905, 9448943, 9448977, 9449164, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 12, 4176, 8648, 12524, 20410, 21332, 21637, 1801945, 8780283, 9443646, 9445819, 9445823, 9446506, 9448457, 9448467, 9448605, 9448908, 9448943, 9448977, 9449181, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 4178230, 9440563, 9445819, 9445824, 9446015, 9448457, 9448467, 9448500, 9448905, 9448941, 9448977, 9449201, 0, 0, 0, 0, 0,
+        14, 10, 21, 0, 5, 11, 2492, 10755, 12506, 20410, 21332, 21637, 2071596, 9061602, 9439317, 9445818, 9445823, 9446746, 9448457, 9448467, 9448656, 9448908, 9448923, 9449122, 9449181, 0, 0, 0, 0, 0,
     };
-    double Y[] = {0., 1., 1., 1., 1., 1., 1., 1., 1., 1.};
+    //double Y[] = {0., 1., 1., 1., 1., 1., 1., 1., 1., 1.};
+    double Y[] = {0., 1., 1., 1., 0., 0., 1., 1., 0., 1.};
 
-    dtree_learner t(TOTAL_FEATURES, 3500, 1);
+    dtree_learner t(30, 5, 1);
     t.start_fit();
 
     while (true) {
@@ -1153,11 +1109,15 @@ void test1() {
 
     double* v = &X[0*C];
     double p = t.predict(v);
-    LOG("predict(0) == " << p)
+    LOG("predict(0) == " << p << " vs 0")
 
     v = &X[1*C];
     p = t.predict(v);
-    LOG("predict(1) == " << p)
+    LOG("predict(1) == " << p << " vs 1")
+
+    v = &X[6*C];
+    p = t.predict(v);
+    LOG("predict(6) == " << p << " vs 1")
 
     t.print();
 
@@ -1166,6 +1126,8 @@ void test1() {
 
 
 int main() {
+
+    random::seed();
 
     test1();
 
@@ -1183,7 +1145,7 @@ extern "C" {
     }
 
     void* alloc_tree_learner(int columns, int k, int lnum) {
-        return new dtree_learner(TOTAL_FEATURES, k, lnum);
+        return new dtree_learner(columns, k, lnum);
     }
 
     void* alloc_tree() {

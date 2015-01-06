@@ -2,7 +2,7 @@
 
 
 //
-// g++ -O3  -ftree-vectorize -L. -l rf fast.cpp -o fast60_8_51.exe
+// g++ -O3  -ftree-vectorize -L. -l rf fast.cpp -o fast_f_80_8_51.exe
 //
 
 
@@ -31,7 +31,7 @@ const int ALLIGN = 64;
 
 const ULONG VEC_LEN = 32;
 const ULONG VEC_LEN_BYTES = VEC_LEN * sizeof(int);
-const ULONG LINES = 1 << 22;
+const ULONG LINES = 1 << 21;
 const ULONG BUFFER_SIZE = LINES * VEC_LEN;
 const ULONG BUFFER_SIZE_BYTES = BUFFER_SIZE * sizeof(int);
 
@@ -53,8 +53,8 @@ const int K       = TOTAL_FEATURES / 3;
 const int LNUM    = 51;
 
 const int LINES_IN_TRAIN = 40428967;
-const int LINES_IN_BS    = 24257380;    // 60%
-//const int LINES_IN_BS    = 32343173;        // 80%
+//const int LINES_IN_BS    = 24257380;    // 60%
+const int LINES_IN_BS    = 32343173;        // 80%
 //const int LINES_IN_BS    = 40428967;   // 100%
 //const int LINES_IN_BS      = 36386070; // 90%
 //const int LINES_IN_BS    = 100;
@@ -100,6 +100,23 @@ struct random {
         }
     }
 
+    /*
+     * Retuns:
+     * k indices out of [0-n) range
+     * with no repetitions
+     */
+    static void get_k_of_n(int k, int n, int* numbers) {
+        for (int i = 0; i < k; ++i) {
+            numbers[i] = i;
+        }
+
+        for (int i = k; i < n; ++i) {
+            int r = randint(0, i);
+            if (r < k) {
+                numbers[r] = i;
+            }
+        }
+    }
 };
 
 
@@ -160,7 +177,8 @@ int main(int argc, const char* argv[]) {
     ///////////////////////////////////////////////////////////////////////
     random::seed();
     for (int t = 0; t < TREES; ++t) {
-        random::randint(0, LINES_IN_TRAIN, &bootstraps[t][0], LINES_IN_BS);
+        //random::randint(0, LINES_IN_TRAIN, &bootstraps[t][0], LINES_IN_BS);	// w/ repetitions
+        random::get_k_of_n(LINES_IN_BS, LINES_IN_TRAIN, &bootstraps[t][0]);	// w/o repetitions
         sort(&bootstraps[t][0], &bootstraps[t][LINES_IN_BS]);
 
         for (int i = 0; i < LINES_IN_BS; ++i)
@@ -271,15 +289,15 @@ int main(int argc, const char* argv[]) {
     // free the learner before exiting
     for (int t = 0; t < TREES; ++t) {
         stringstream ss;
-        //ss << "/home/maxim/kaggle/CTR/rf/sub2/80_1_5_" << t << ".b";
-        ss << "c:\\Temp\\kaggle\\CTR\\rf\\sub2\\60_8_51_" << t << ".b";
+        //ss << "/home/maxim/kaggle/CTR/rf/sub2/f_80_1_5_" << t << ".b";
+        ss << "c:\\Temp\\kaggle\\CTR\\rf\\sub2\\f_80_8_51_" << t << ".b";
 
         int fcnt = 0;
         while (exists(ss.str().c_str())) {
             ++fcnt;
             ss.str("");
-            //ss << "/home/maxim/kaggle/CTR/rf/sub2/80_1_5_" << t << "(" << fcnt << ")" << ".b";
-            ss << "c:\\Temp\\kaggle\\CTR\\rf\\sub2\\60_8_51_" << t << "(" << fcnt << ")" << ".b";
+            //ss << "/home/maxim/kaggle/CTR/rf/sub2/f_80_1_5_" << t << "(" << fcnt << ")" << ".b";
+            ss << "c:\\Temp\\kaggle\\CTR\\rf\\sub2\\f_80_8_51_" << t << "(" << fcnt << ")" << ".b";
         }
 
         cout << "# saving tree " << t << " into '" << ss.str() << "'" << endl;

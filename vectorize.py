@@ -1,121 +1,75 @@
 
 
-import os
-import sys
 from array import array
-import numpy as np
-
 import pathes
-import utils
 
 
-DICT_NUM = 21
-features = [None] * DICT_NUM
+FEATURES_OLD = 25
+FEATURES_NEW = 100      # 1 to 4
+
+VEC_LEN = 32
+VEC_LEN_NEW = 2 + FEATURES_NEW
+
+CNT_IDX = 0
+CLK_IDX = 1
+RATE_IDX = 2
+
+NULL = -999999999
 
 
-def load_features():
-    max_id = -1
-    for i in range(DICT_NUM):
-        features[i] = {}
-        fn = pathes.path_data + "data%d.txt" % (i+4)
-        with open(fn, 'r') as fin:
-            ID = 0
-            for line in fin:
-                line = line.strip()
-                features[i][line] = ID
-                ID += 1
-                if max_id < ID:
-                    max_id = ID
-        print "# loading features IDs from", fn
+def process(fname, hists):
+    fname_out = fname + ".hist"
 
-    print "# max ID ", max_id
+    with open(fname, 'rb') as fin:
+        with open(fname_out, "wb+") as fout:
+            try:
+                while True:
+                    a = array('l')
+                    a.fromfile(fin, VEC_LEN)
 
+                    o = array('l', [NULL] * VEC_LEN_NEW)
 
+                    o[0] = a[0] # id
+                    o[1] = a[1] # click
 
-def print_features():
-    for b in range(DICT_NUM):
-        cnt = 0
-        for f in features[b]:
-            print "#", b, " - ", f, " -> ", features[b][f]
-            cnt += 1
-            if cnt > 30:
-                print "# break... total", len(features[b])
-                break
+                    for f in range(FEATURES_OLD):
+                        idx = 2 + f
+                        val = a[idx]
+                        o[idx] = val
+                        o[idx + FEATURES_OLD] = hists[f][val][CNT_IDX]
+                        o[idx + FEATURES_OLD * 2] = hists[f][val][CLK_IDX]
+                        o[idx + FEATURES_OLD * 3] = hists[f][val][RATE_IDX]
+                    o.tofile(fout)
+
+            except Exception as ex:
+                print "# ", ex, "EOF"
 
 
 
-
-def write(fout, vec):
-    a = array('l', [int(i) for i in vec])
-    a.tofile(fout)
-    fout.flush()
-
-
-def vectorize(name):
-    # Feature vector:
-    # [ ID, click, year, month, day, hour, <24 categorical features> ]
-    #
-    # For categorical features I will only have 23 indices
-
-    with open(pathes.path_data + name, 'r') as fin:
-        # skip header
-        fin.readline()
-        with open(pathes.path_train + name + ".b", 'wb+') as fout:
-            cnt = 0
-
-            for line in fin:
-                line = line.strip()
-                tokens = line.split(',')
-                idx = 0
-                vec = []
-
-                vec.append(str(cnt))         # vec id
-                idx += 1
-                if 24 == len(tokens):
-                    vec.append(tokens[idx])  # click
-                    idx += 1
-                else:
-                    vec.append('0')          # this is a test set
-
-                year = tokens[idx][:2]
-                month = tokens[idx][2:4]
-                day = tokens[idx][4:6]
-                hour = tokens[idx][6:]
-                vec.append(year)            #
-                vec.append(month)           #
-                vec.append(day)             #
-                vec.append(hour)            #
-                idx += 1
-
-                F_IDX = 6
-
-                ff = []
-                for i in range(DICT_NUM):
-                    k = tokens[idx]
-                    if k in features[i]:
-                        v = features[i][k]
-                    else:
-                        v = -1
-                    ff.append(v)
-                    idx += 1
-
-                cnt += 1
-
-                ##ff.sort()
-                vec[F_IDX:F_IDX+DICT_NUM] = ff
-
-                # padding - so I have 32 int items in an array
-                vec.extend([0,0,0,0,0])
-
-                write(fout, vec)
-            # end for line
-            print "# done,", cnt, "lines were written"
 
 def main():
-    load_features()
-    print_features()
-    vectorize('train.csv')
-    #vectorize('test.csv')
+    fname = pathes.path_train + "train.csv.b"
+    #fname = pathes.path_train + "test.csv.b"
+
+    hists = [None] * FEATURES_OLD
+
+    with open("hist_train.csv", 'r') as fhist:
+        for line in fhist:
+            line = line.strip()
+            vals = line.split(',')
+
+            f = int(vals[0])
+            val = int(vals[1])
+            appears = int(vals[2])
+            clicks = int(vals[3])
+            rate = int( float(vals[4]) * 10000000 )
+
+            if None == hists[f]:
+                hists[f] = dict()
+
+            hists[f][val] = (appears, clicks, rate)
+
+    process(fname, hists)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 //
-// g++ RF.cpp -shared -o rf.dll
+// g++ -O3 RF.cpp -shared -o rf.dll
 // g++ RF.cpp -o rf.exe
 //
 // g++ -O3 RF.cpp -shared -o librf.so
@@ -22,33 +22,50 @@
 using namespace std;
 
 
+typedef int DATATYPE;
+typedef float RFTYPE;
+
+
 #define LOG(...) {cout << __VA_ARGS__ << endl;}
-
-
 
 #define ALIGNMENT  __attribute__((aligned(16))
 
 
+const RFTYPE NOVAL = -999999999;
+
+
 //
-// Utils
+// data
 //
+template<class T>
+struct data {
+    data() :
+        count(0),
+        idx(-1),
+        x_val(-1),
+        y_sum(0)
+    {}
+
+    int count;
+    int idx;
+    T x_val;
+    T y_sum;
 
 
+    void tofile(FILE* fd) const {
+        fwrite(&count, sizeof(int), 1, fd);
+        fwrite(&idx, sizeof(int), 1, fd);
+        fwrite(&x_val, sizeof(T), 1, fd);
+        fwrite(&y_sum, sizeof(T), 1, fd);
+    }
 
-namespace utils {
-
-double abs(double d) {return d > 0. ? d : -d;}
-
-bool equal(double v1, double v2, double e = 0.0001) {
-    if (utils::abs(v1 - v2) < e)
-        return true;
-    return false;
-}
-
-}   // utils
-
-
-
+    void fromfile(FILE* fd) {
+        fread(&count, sizeof(int), 1, fd);
+        fread(&idx, sizeof(int), 1, fd);
+        fread(&x_val, sizeof(T), 1, fd);
+        fread(&y_sum, sizeof(T), 1, fd);
+    }
+};
 
 
 
@@ -57,73 +74,7 @@ bool equal(double v1, double v2, double e = 0.0001) {
 //
 namespace memory {
 
-template<class T>
-struct DESTRUCTOR {
-    static void destroy(T* p) {delete p;}
-};
-
-template<class T>
-struct DESTRUCTOR_ARRAY {
-    static void destroy(T* p) {delete [] p;}
-};
-
-
-
-template<class T, class D=DESTRUCTOR_ARRAY<T> >
-struct ptr {
-    T* p_;
-    int* ref_;
-
-    ptr() : p_(NULL), ref_(NULL) {}
-    ptr(T* p) : p_(p), ref_(new int(1)) {}
-    ptr(const ptr& other) {
-        p_ = other.p_;
-        ref_ = other.ref_;
-        if (ref_)
-            ++(*ref_);
-    }
-
-    ~ptr() {free();}
-
-    ptr& operator=(const ptr& other) {
-        ptr tmp = other;
-        swap(tmp);
-        return *this;
-    }
-
-    T* get() {return p_;}
-
-    T* operator->() {return p_;}
-
-    T& operator[] (int i) {
-        return get()[i];
-    }
-
-    void free() {
-        if (ref_) {
-            if (0 == --(*ref_)) {
-                D::destroy(p_);
-                delete ref_;
-
-                p_ = NULL;
-                ref_ = NULL;
-            }
-        }
-    }
-
-    void swap(ptr& other) {
-        T* tmp = p_;
-        p_ = other.p_;
-        other.p_ = tmp;
-
-        int* tmp_i = ref_;
-        ref_ = other.ref_;
-        other.ref_ = tmp_i;
-    }
-};
-
-
-
+#define MEM_SIZE 2000000
 
 }   // memory
 
@@ -139,18 +90,22 @@ struct random {
     }
 
     static int randint() {
-        return rand();
+#if (0x7FFF < RAND_MAX)
+            return rand();
+#else
+            return (int)rand() * ((int)RAND_MAX + 1) + (int)rand();
+#endif
     }
 
     static int randint(int low, int high) {
-        int r = rand();
+        int r = randint();
         r = r % (high - low) + low;
         return r;
     }
 
     static void randint(int low, int high, int* numbers, int size) {
         for (int i = 0; i < size; ++i)
-            numbers[i] = rand() % (high - low) + low;
+            numbers[i] = randint() % (high - low) + low;
     }
 
     /*
@@ -171,482 +126,8 @@ struct random {
         }
     }
 
-    template<class T>
-    static void shuffle(T* buffer, int size) {
-        for (int i = 0; i < size; ++i) {
-            int r = randint(0, size);
-
-            T tmp = buffer[i];
-            buffer[i] = buffer[r];
-            buffer[r] = tmp;
-        }
-    }
-
 };
 
-
-//
-// Lin algebra
-//
-struct linalg {
-
-    static void bootstrap(const double* __restrict__ X,
-                          const double* __restrict__ Y,
-                          int rows,
-                          int columns,
-                          double* __restrict__ bs_X,
-                          double* __restrict__ bs_Y,
-                          int bs_rows) {
-        random::seed();
-        int indices[bs_rows];
-        random::randint(0, rows, indices, bs_rows);
-
-        for (int x = 0; x < bs_rows; ++x) {
-            copy(&X[ indices[x] * columns ], &bs_X[ x * columns ], columns);
-            bs_Y[x] = Y[ indices[x] ];
-        }
-    }
-
-    static void range(int low, int high, int* buffer) {
-        for (int i = low; i < high; ++i) {
-            buffer[i] = i;
-        }
-    }
-
-
-    static void linspace(double min, double max, int num, double* buffer) {
-        double delta = (max - min) / (num - 1.);
-
-        buffer[0] = min;
-        for (int i = 1; i < num-1; ++i) {
-            buffer[i] = buffer[i-1]+delta;
-        }
-        buffer[num-1] = max;
-    }
-
-    // op with scalar
-    static void mul(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = v[i] * scalar;
-        }
-    }
-
-    static void div(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = v[i] / scalar;
-        }
-    }
-
-    static void sub(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = v[i] - scalar;
-        }
-    }
-
-    static void add(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = v[i] + scalar;
-        }
-    }
-
-    static void pow(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = ::pow(v[i], scalar);
-        }
-    }
-
-    static void pow_inplace(double scalar, double* __restrict__ v, int size) {
-        for (int i = 0; i < size; ++i) {
-            v[i] = ::pow(v[i], scalar);
-        }
-   }
-
-    static void mul_and_add(double scalar, const double* __restrict__ v, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] += v[i] * scalar;
-        }
-    }
-
-    // vec to vec
-    static void mul(const double* __restrict__ v1, const double* __restrict__ v2, double* r, int rows, int columns) {
-        int N = rows * columns;
-        for (int i = 0; i < N; ++i) {
-            r[i] = v1[i] * v2[i];
-        }
-    }
-
-    static void mul_and_add(const double* __restrict__ v1, const double* __restrict__ v2, double* r, int rows, int columns) {
-        int N = rows * columns;
-        for (int i = 0; i < N; ++i) {
-            r[i] += v1[i] * v2[i];
-        }
-    }
-
-    static void div(const double* __restrict__ v1, const double* __restrict__ v2, double* r, int rows, int columns) {
-        int N = rows * columns;
-        for (int i = 0; i < N; ++i) {
-            r[i] = v1[i] / v2[i];
-        }
-    }
-
-    static void sub(const double* __restrict__ v1, const double* __restrict__ v2, double* r, int size) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = v1[i] - v2[i];
-        }
-    }
-
-    static void add(const double* __restrict__ v1, const double* __restrict__ v2, double* r, int rows, int columns) {
-        int N = rows * columns;
-        for (int i = 0; i < N; ++i) {
-            r[i] = v1[i] + v2[i];
-        }
-    }
-
-    static double sum(const double* __restrict__ v, int size) {
-        double sum = 0.;
-        for (int i = 0; i < size; ++i) {
-            sum += v[i];
-        }
-        return sum;
-    }
-
-    // dot product
-    static double dot(const double* __restrict__ v1, const double* __restrict__ v2, int size) {
-        double r = 0.;
-        for (int i = 0; i < size; ++i) {
-            r += v1[i] * v2[i];
-        }
-        return r;
-    }
-
-    /* rows - number of rows in the matrix 'm' and elements in the vector 'r'
-     * columns - number of columns in the matrix 'm' and elements in the vector 'v'
-     */
-    static void dot_m_to_v(const double* __restrict__ m, const double* __restrict__ v, double* r, int rows, int columns) {
-        for (int row = 0; row < rows; ++row) {
-            int begin = row * columns;
-            double sum = 0.;
-            for (int col = 0; col < columns; ++col) {
-                sum += m[begin + col] * v[col];
-            }
-            r[row] = sum;
-        }
-    }
-
-    static void dot_v_to_m(const double* __restrict__ v, const double* __restrict__ m, double* r, int rows, int columns) {
-        set(r, 0., columns);
-        for (int row = 0; row < rows; ++row) {
-            mul_and_add(v[row], &m[row*columns], r, columns);
-        }
-    }
-
-
-    static void min_max(const double* __restrict__ m, int rows, int columns, int idx, double& min, double& max) {
-        min = 1000000000.;
-        max = -1000000000.;
-        for (int i = 0; i < rows; ++i) {
-            if (min > m[i*columns+idx])
-                min = m[i*columns+idx];
-            if (max < m[i*columns+idx])
-                max = m[i*columns+idx];
-        }
-    }
-
-
-    static double mean(const double* __restrict__ v, int size) {
-        double sum = 0.;
-        for (int i = 0; i < size; ++i) {
-            sum += v[i];
-        }
-        return sum / size;
-    }
-
-    static double* clone(const double* __restrict__ v, int size) {
-        double * new_v = new double[size];
-        for (int i = 0; i < size; ++i) {
-            new_v[i] = v[i];
-        }
-        return new_v;
-    }
-
-    static void copy(const double* __restrict__ s, double* __restrict__ d, int size) {
-        for (int i = 0; i < size; ++i) {
-            d[i] = s[i];
-        }
-    }
-
-    static double* zeros(int size) {
-        return alloc_and_set(size, 0.);
-    }
-
-    static double* alloc_and_set(int size, double val) {
-        double* v = new double[size];
-        for (int i = 0; i < size; ++i) {
-            v[i] = val;
-        }
-        return v;
-    }
-
-    static void set(double* __restrict__ v, double scalar, int size) {
-        for (int i = 0; i < size; ++i)
-            v[i] = scalar;
-    }
-
-
-    static void split_array(const double* origX, const double* origY, int rows, int columns,
-                            int feature_idx, double feature_val,
-                            double** leftX, double** leftY, int& left_rows,
-                            double** rightX, double** rightY, int& right_rows) {
-        left_rows = 0;
-        right_rows = 0;
-        for (int i = 0; i < rows; ++i) {
-            if (origX[i * columns + feature_idx] <= feature_val) {
-                ++left_rows;
-            }
-            else {
-                ++right_rows;
-            }
-        }
-
-        // allocate
-        *leftX = new double[left_rows * columns];
-        *leftY = new double[left_rows];
-        *rightX = new double[right_rows * columns];
-        *rightY = new double[right_rows];
-
-        //
-        int left_idx = 0;
-        int right_idx = 0;
-        for (int i = 0; i < rows; ++i) {
-            if (origX[i * columns + feature_idx] <= feature_val) {
-                copy(&origX[i*columns], &(*leftX)[left_idx*columns], columns);
-                (*leftY)[left_idx] = origY[i];
-                ++left_idx;
-            }
-            else {
-                copy(&origX[i*columns], &(*rightX)[right_idx*columns], columns);
-                (*rightY)[right_idx] = origY[i];
-                ++right_idx;
-            }
-        }
-    }
-
-};
-
-
-//
-// Optimization
-//
-struct optimize {
-    typedef void (*FUNC)(const double* theta, const double* X, const double* Y, double* cost, double* grad, int rows, int columns);
-
-    static void minimize_gc(double* __restrict__ theta, const double* X, int rows, int columns, const double* Y, FUNC func, int max_iterations) {
-        double cost = 0.;
-        double grad[columns];
-
-        double e = 0.0001;
-        double a = .4;
-
-        func(theta, X, Y, &cost, grad, rows, columns);
-
-        int cur_iter = 0;
-
-        while (cost > e && cur_iter < max_iterations) {
-            ++cur_iter;
-
-            for (int i = 0; i < columns; ++i) {
-                theta[i] = theta[i] - a * grad[i];
-            }
-
-            double new_cost;
-            func(theta, X, Y, &new_cost, grad, rows, columns);
-
-            if (cost < new_cost)
-                a /= 2.;
-
-            cost = new_cost;
-        }
-    }
-
-    // for simple func: 1/M * 1/2 * SUM( (H - Y)**2 )
-    static void quadratic_cost(const double* theta, const double* X, const double* Y, double* cost, double* grad, int rows, int columns) {
-        double M = rows;
-
-        memory::ptr<double> tmp( linalg::zeros(rows) );
-        linalg::dot_m_to_v(X, theta, tmp.get(), rows, columns);
-
-        memory::ptr<double> deltas( linalg::zeros(rows) );
-        linalg::sub(tmp.get(), Y, deltas.get(), rows);
-
-        linalg::pow(2., deltas.get(), tmp.get(), rows);
-       *cost = (linalg::sum(tmp.get(), rows) / 2.) / M;
-
-        linalg::dot_v_to_m(deltas.get(), X, grad, rows, columns);
-        linalg::div(M, grad, grad, columns);
-    }
-
-    //
-    // Logistic regression
-    //
-    static void sigmoid(const double* __restrict__ x, double* r, int size, bool correct_borders=true) {
-        for (int i = 0; i < size; ++i) {
-            r[i] = 1. / (1. + ::exp(-x[i]));
-            if (correct_borders) {
-                if (r[i] == 1.)
-                    r[i] = .99999999;
-                else if (r[i] == 0.)
-                    r[i] = .00000001;
-            }
-        }
-    }
-
-    static void logistic_h(const double* __restrict__ theta, const double* __restrict__ X, double* r, int rows, int columns) {
-        linalg::dot_m_to_v(X, theta, r, rows, columns);
-        sigmoid(r, r, rows);
-    }
-
-    // for logistic cos func: sigmoid( h(X) )
-    static void logistic_cost(const double* theta, const double* X, const double* Y, double* cost, double* grad, int rows, int columns) {
-        double M = rows;
-
-        memory::ptr<double> h = linalg::zeros(rows);
-        logistic_h(theta, X, h.get(), rows, columns);
-
-        double E = 0.;
-        for (int i = 0; i < rows; ++i) {
-            E += (-Y[i]) * ::log(h.get()[i]) - (1. - Y[i]) * ::log(1. - h.get()[i]);
-        }
-        E /= M;
-
-        *cost = E;
-
-        memory::ptr<double> deltas = linalg::zeros(rows);
-        linalg::sub(h.get(), Y, deltas.get(), rows);
-        linalg::dot_v_to_m(deltas.get(), X, grad, rows, columns);
-    }
-};      // optimize
-
-
-
-//
-// RF node val
-//
-
-struct node_val_base {
-    virtual ~node_val_base(){};
-    virtual double get_val(const double* v, int size) = 0;
-    virtual int get_val_size() = 0;
-};
-
-struct node_val_mean : public node_val_base {
-    double val_;
-
-    node_val_mean(const double* X,
-                  const double* Y,
-                  int rows,
-                  int columns) {
-        val_ = linalg::mean(Y, rows);
-    }
-    virtual ~node_val_mean() {}
-
-    virtual int get_val_size() { return 1; }
-
-    virtual double get_val(const double*, int) {
-        return val_;
-    }
-};
-
-struct node_val_linear_regression : public node_val_base {
-
-    int theta_len_;
-    memory::ptr<double> theta_;
-
-    node_val_linear_regression(const double* X,
-                               const double* Y,
-                               int rows,
-                               int columns) {
-        memory::ptr<double> tmp = linalg::zeros(rows*(columns+1));
-        for (int i = 0; i < rows; ++i) {
-            tmp.get()[i*(columns+1) + 0] = 1.;
-            linalg::copy(&X[i*columns], &(tmp.get()[i*(columns+1) + 1]), columns);
-        }
-
-        theta_ = memory::ptr<double>(new double[columns+1]);
-        for (int i = 0; i < columns+1; ++i)
-            theta_.get()[i] = ((double)random::randint(0, 1000) / 1000.) - .5;
-        optimize::minimize_gc(theta_.get(), tmp.get(), rows, columns + 1, Y, optimize::quadratic_cost, 100);
-
-        theta_len_ = columns + 1;
-    }
-
-    virtual ~node_val_linear_regression() {}
-
-    virtual int get_val_size() {
-        return theta_len_;
-    }
-
-    virtual double get_val(const double* v, int size) {
-        if (!v)
-            return -1.;
-
-        double tmp[size+1];
-        tmp[0] = 1.;
-        linalg::copy(v, &tmp[1], size);
-        double p = linalg::dot(tmp, theta_.get(), size);
-        return p;
-    }
-};
-
-struct node_val_logistic_regression : public node_val_base {
-
-    int theta_len_;
-    memory::ptr<double> theta_;
-
-    node_val_logistic_regression(const double* X,
-                               const double* Y,
-                               int rows,
-                               int columns) {
-        memory::ptr<double> tmp = linalg::zeros(rows*(columns+1));
-        for (int i = 0; i < rows; ++i) {
-            tmp.get()[i*(columns+1) + 0] = 1.;
-            linalg::copy(&X[i*columns], &(tmp.get()[i*(columns+1) + 1]), columns);
-        }
-
-        theta_ = memory::ptr<double>(new double[columns+1]);
-        for (int i = 0; i < columns+1; ++i)
-            theta_.get()[i] = ((double)random::randint(0, 1000) / 1000.) - .5;
-        optimize::minimize_gc(theta_.get(), tmp.get(), rows, columns + 1, Y, optimize::logistic_cost, 1000);
-
-        theta_len_ = columns + 1;
-    }
-
-    virtual ~node_val_logistic_regression() {}
-
-    virtual int get_val_size() {
-        return theta_len_;
-    }
-
-    virtual double get_val(const double* v, int size) {
-        if (!v)
-            return -1.;
-
-        double tmp[size+1];
-        tmp[0] = 1.;
-        linalg::copy(v, &tmp[1], size);
-        double r;
-        optimize::logistic_h(theta_.get(), tmp, &r, 1, size+1);
-
-        return r;
-    }
-};
-
-
-
-
-
-//
-// RandomForest
-//
 
 
 
@@ -656,30 +137,70 @@ struct node_val_logistic_regression : public node_val_base {
 // Fast dtree
 //
 
+template<class T>
 class dtree_node {
-    struct data {
-        data() :
-            count(0),
-            idx(-1),
-            x_val(-1.),
-            y_sum(0.),
-            y_sum_squared(0.)
-        {}
-
-        int count;
-        int idx;
-        double x_val;
-        double y_sum;
-        double y_sum_squared;
-    };
 
     struct split_data {
         vector<int> indices;
-        vector<std::map<double, data> > accums;
+        vector<std::map<T, data<T> > > accums;
 
         void clear() {
             indices.clear();
             accums.clear();
+        }
+
+        void tofile(FILE* fd) const {
+            // format: <K><K indices><K maps>
+            // map format: <num elements><elements>
+            // elment: "data<T>" structure
+
+            int K = indices.size();
+            fwrite(&K, sizeof(int), 1, fd);
+
+            // indices
+            for (int i = 0; i < K; ++i) {
+                fwrite(&indices[i], sizeof(int), 1, fd);
+            }
+
+            // accumulators - every index has a set of accumulators according to the number of values
+            for (int i = 0; i < K; ++i) {
+                int size = accums[i].size();
+                fwrite(&size, sizeof(int), 1, fd);
+
+                for (typename std::map<T, data<T> >::const_iterator it = accums[i].begin(); it != accums[i].end(); ++it) {
+                    const data<T>& d = it->second;
+                    d.tofile(fd);
+                }
+            }
+        }
+
+        void fromfile(FILE* fd) {
+            // format: <K><K indices><K maps>
+            // map format: <num elements><elements>
+            // elment: "data<T>" structure
+
+            clear();
+
+            int K = 0;
+            fread(&K, sizeof(int), 1, fd);
+
+            for (int i = 0; i < K; ++i) {
+                int tmp;
+                fread(&tmp, sizeof(int), 1, fd);
+                indices.push_back(tmp);
+            }
+            for (int i = 0; i < K; ++i) {
+                int size;
+                fread(&size, sizeof(int), 1, fd);
+                if (size) {
+                    accums.push_back(std::map<T, data<T> >());
+                    for (int m = 0; m < size; ++m) {
+                        data<T> d;
+                        d.fromfile(fd);
+                        accums[i][d.x_val] = d;
+                    }
+                }
+            }
         }
     };
 
@@ -688,9 +209,8 @@ class dtree_node {
 
     split_data sd_;
 
-    double total_y_sum;
-    double total_y_sum_squared;
-    double total_count;
+    T total_y_sum;
+    int total_count;
 
     int node_vector_idx;
 
@@ -699,118 +219,152 @@ public:
         K(kf),
         LNUM(ln),
         sd_(),
-        total_y_sum(0.),
-        total_y_sum_squared(0.),
-        total_count(0.)
+        total_y_sum(0),
+        total_count(0),
+        node_vector_idx(-1)
     {}
 
     void set_node_vector_idx(int idx) { node_vector_idx = idx; }
     int get_node_vector_idx() const { return node_vector_idx; }
 
-    double get_mean() const { return total_y_sum / total_count; }
+    double get_mean() const { return (double)total_y_sum / (double)total_count; }
     int get_count() const { return total_count; }
+
+
+    void tofile(FILE* fd) const {
+        // format: <K><LNUM><node idx><sd><total_y_sum><total_count>
+        // sd: "split_data" structure
+
+        fwrite(&K, sizeof(int), 1, fd);
+        fwrite(&LNUM, sizeof(int), 1, fd);
+        fwrite(&node_vector_idx, sizeof(int), 1, fd);
+        sd_.tofile(fd);
+        fwrite(&total_y_sum, sizeof(T), 1, fd);
+        fwrite(&total_count, sizeof(int), 1, fd);
+    }
+
+    void fromfile(FILE* fd) {
+        // format: <K><LNUM><node idx><sd><total_y_sum><total_count>
+        // sd: "split_data" structure
+
+        fread(&K, sizeof(int), 1, fd);
+        fread(&LNUM, sizeof(int), 1, fd);
+        fread(&node_vector_idx, sizeof(int), 1, fd);
+        sd_.fromfile(fd);
+        fread(&total_y_sum, sizeof(T), 1, fd);
+        fread(&total_count, sizeof(int), 1, fd);
+    }
 
     void start_splitting(int* indices) {
         sd_.clear();
 
         for (int i = 0; i < K; ++i) {
             sd_.indices.push_back(indices[i]);
-            sd_.accums.push_back(std::map<double, data>());
+            sd_.accums.push_back(std::map<T, data<T> >());
         }
 
-        total_y_sum = 0.;
-        total_y_sum_squared = 0.;
+        total_y_sum = 0;
         total_count = 0;
     }
 
-    void process_splitting(const double* x, double y) {
+    void process_splitting(const T* x, T y) {
         // go through all selected features and take its values
         for (int i = 0; i < K; ++i) {
             // value of the current feature
-            double val = x[ sd_.indices[i] ];
-            typename std::map<double, data>::iterator result = sd_.accums[i].find(val);
+            T val = x[ sd_.indices[i] ];
+
+            typename std::map<T, data<T> >::iterator result = sd_.accums[i].find(val);
 
             if (sd_.accums[i].end() == result) {
-                data d;
+                data<T> d;
                 d.idx = sd_.indices[i];
                 d.x_val = val;
                 d.count = 1;
                 d.y_sum = y;
-                d.y_sum_squared = y * y;
-                sd_.accums[i].insert(std::pair<double, data>(val, d));
+                sd_.accums[i].insert(std::pair<T, data<T> >(val, d));
             }
             else {
-                data& d = result->second;
+                data<T>& d = result->second;
                 d.count += 1;
                 d.y_sum += y;
-                d.y_sum_squared += y * y;
             }
         }
 
         total_y_sum += y;
-        total_y_sum_squared += y * y;
         total_count += 1;
     }
 
-    void stop_splitting(int* idx, double* val, double* gain) {
+    void stop_splitting(int* idx, T* val, double* gain) {
+
+        int can_idx = -1;
+        T can_val = -1.;
+        double can_gain = -1.;
+
         int best_idx = -1;
-        double best_val = -1.;
+        T best_val = -1.;
         double best_gain = -1.;
 
         for (int i = 0; i < K; ++i) {
-            // latest element contains sums for total set
 
-            double mean = total_y_sum / total_count;
-            double mean_squared = mean * mean;
+            double mean = (double)total_y_sum / (double)total_count;
 
-            //
+            // name "accumulator" is legacy one
+            // as I do not accumulate values here actually
             double left_sum_accum = 0.;
             double right_sum_accum = 0.;
-            double left_sum_squared_accum = 0.;
-            double right_sum_squared_accum = 0.;
             int left_count_accum = 0;
             int right_count_accum = 0;
 
             // this will go from the smallest value to the biggest one
-            for (typename std::map<double, data>::iterator it = sd_.accums[i].begin(); it != sd_.accums[i].end(); ++it) {
-                data& d = it->second;
+            for (typename std::map<T, data<T> >::iterator it = sd_.accums[i].begin(); it != sd_.accums[i].end(); ++it) {
+                data<T>& d = it->second;
 
-                left_sum_accum += d.y_sum;
-                right_sum_accum = (total_y_sum - left_sum_accum);
-                left_sum_squared_accum += d.y_sum_squared;
-                right_sum_squared_accum = (total_y_sum_squared - left_sum_squared_accum);
+                left_sum_accum += d.y_sum;                           // equal to val go to left
+                right_sum_accum = (total_y_sum - left_sum_accum);    // not equal to val go to right
 
                 left_count_accum += d.count;
                 right_count_accum = ((int)total_count - left_count_accum);
 
-                double left_mean = left_count_accum ? left_sum_accum / left_count_accum : 0.;
-                double right_mean = right_count_accum ? right_sum_accum / right_count_accum : 0.;
+                if (left_count_accum && right_count_accum) {
+                    double left_mean = left_count_accum ? left_sum_accum / left_count_accum : 0.;
+                    double right_mean = right_count_accum ? right_sum_accum / right_count_accum : 0.;
 
-                double left_mean_squared = left_mean * left_mean;
-                double right_mean_squared = right_mean * right_mean;
+                    double e = entropy(mean);
+                    double e_left = entropy(left_mean);
+                    double e_right = entropy(right_mean);
 
-                double g = (total_y_sum_squared + mean_squared * total_count - 2. * mean * total_y_sum) -
-                           (left_sum_squared_accum + left_mean_squared * left_count_accum - 2. * left_mean * left_sum_accum) -
-                           (right_sum_squared_accum + right_mean_squared * right_count_accum - 2. * right_mean * right_sum_accum);
 
-        		// sanity check
-        		if (isnan(g)) {
-        			LOG("# ERROR: gain is nan, feature: " << i << ", feature idx: " << d.idx)
-        			LOG("# ERROR: left count: " << left_count_accum << ", right count: " << right_count_accum)
-        		}
+                    double g = e - ((double)left_count_accum / (double)total_count * e_left + (double)right_count_accum / (double)total_count * e_right);
+                    // sanity check
+                    if (isnan(g)) {
+                        LOG("# ERROR: gain is nan, feature: " << i << ", feature idx: " << d.idx)
+                        LOG("# ERROR: left count: " << left_count_accum << ", right count: " << right_count_accum)
+                    }
 
-                if (g > 0. && (/*best_idx == -1 ||*/ g > best_gain)) {
-                    if (LNUM <= left_count_accum && LNUM <= right_count_accum) {
-                        best_idx = d.idx;
-                        best_val = d.x_val;
-                        best_gain = g;
+                    if (g > 0. && g > best_gain) {
+                        if (LNUM <= left_count_accum && LNUM <= right_count_accum) {
+                            best_idx = d.idx;
+                            best_val = d.x_val;
+                            best_gain = g;
+                        }
+                    }
 
-//LOG((total_y_sum_squared + mean_squared * total_count - 2. * mean * total_y_sum))
-//LOG((left_sum_squared_accum + left_mean_squared * left_count_accum - 2. * left_mean * left_sum_accum))
-//LOG((right_sum_squared_accum + right_mean_squared * right_count_accum - 2. * right_mean * right_sum_accum))
-//LOG(best_idx << "; " << best_val << "; " << best_gain)
+                    if (g > 0. && g > can_gain) {
+                        can_idx = d.idx;
+                        can_val = d.x_val;
+                        can_gain = g;
                     }
                 }
+            }
+        }
+
+        if (-1 == best_idx && -1 != can_idx) {
+            double m = get_mean();
+            if (.3 < m && m < .7) {
+                // I think this is too much mixed, so let's try to split it more
+                best_idx = can_idx;
+                best_val = can_val;
+                best_gain = can_gain;
             }
         }
 
@@ -821,9 +375,21 @@ public:
         sd_.clear();
     }
 
+    double entropy(double mean) {
+
+        double p0 = 1. - mean;
+        double p1 = mean;
+
+        p0 = p0 > 0. ? (-p0 * log(p0)) : 0.;
+        p1 = p1 > 0. ? (-p1 * log(p1)) : 0.;
+
+        return p0 + p1;
+    }
+
 };
 
 
+template<class T, class RF>
 class dtree {
 public:
     enum {
@@ -841,33 +407,38 @@ public:
         VAL_IDX = 3,
         LEFT_IDX = 4,
         RIGHT_IDX = 5,
+
+        CNT_IDX = 5,
     };
 
 protected:
     // vector of length VEC_LEN: leaf [node_id, class, data, ...] or intermediate node [node_id, class, idx, val, left, right]
-    vector<double> tree_;
+    vector<RF> tree_;
 
 public:
-    dtree() : tree_() {}
+    dtree() : tree_() {
+        tree_.reserve(3000000 * sizeof(RF));
+    }
+
     virtual ~dtree() {}
 
 
-    void tofile(const char* fname) {
+    virtual void tofile(const char* fname) {
         FILE* fd = fopen(fname, "wb+");
         for (int i = 0; i < tree_.size(); ++i) {
-            fwrite(&tree_[i], sizeof(double), 1, fd);
+            fwrite(&tree_[i], sizeof(RF), 1, fd);
         }
 
         fclose(fd);
     }
 
-    void fromfile(const char* fname) {
+    virtual void fromfile(const char* fname) {
         tree_.clear();
 
         FILE* fd = fopen(fname, "rb");
         while(!feof(fd)) {
-            double d;
-            fread(&d, sizeof(double), 1, fd);
+            RF d;
+            fread(&d, sizeof(RF), 1, fd);
             tree_.push_back(d);
         }
         fclose(fd);
@@ -878,7 +449,7 @@ public:
 
         cout << "// DTree array" << endl;
         cout << "int dtree_array_size = " << tree_.size() << ";" << endl;
-        cout << "double dtree_array[] = {" << endl;
+        cout << "float dtree_array[] = {" << endl;
         for (int i = 0; i < num; ++i) {
             cout << tree_[i * dtree::VEC_LEN + 0] << ","
                  << tree_[i * dtree::VEC_LEN + 1] << ","
@@ -891,22 +462,33 @@ public:
         cout << "// END of DTree array" << endl;
     }
 
-    double predict(const double* x) {
+    double predict(const T* x, int start_idx=0, double* cnt=NULL) {
         if (!tree_.size())
             return 0.;
 
         double val = 0.;
-        int start_idx = 0;
 
         while (true) {
-            double* node = &tree_[start_idx];
+            RF* node = &tree_[start_idx];
 
             if (dtree::LEAF == node[CLS_IDX]) {
-                val = node[DATA_IDX];
+                val = (double)node[DATA_IDX];
+                if (cnt)
+                    *cnt = (double)node[CNT_IDX];
                 break;
             }
             else {
-                if (x[ (int)node[IDX_IDX] ] <= node[VAL_IDX]) {
+                if (NOVAL == x[ (int)node[IDX_IDX] ]) {
+                    double left_cnt = 0.;
+                    double pl = predict(x, (int)node[LEFT_IDX] * dtree::VEC_LEN, &left_cnt);
+                    double right_cnt = 0.;
+                    double pr = predict(x, (int)node[RIGHT_IDX] * dtree::VEC_LEN, &right_cnt);
+                    val = (left_cnt * pl + right_cnt * pr) / (left_cnt + right_cnt);
+                    if (cnt)
+                        *cnt = left_cnt + right_cnt;
+                    break;
+                }
+                else if (x[ (int)node[IDX_IDX] ] <= node[VAL_IDX]) {
                     start_idx = (int)node[LEFT_IDX] * dtree::VEC_LEN;
                 }
                 else {
@@ -917,73 +499,78 @@ public:
 
         return val;
     }
+
 };
 
 
-class dtree_learner : public dtree {
-    map<int, dtree_node> nodes_;
+template<class T, class RF=double>
+class dtree_learner : public dtree<T, RF> {
+    map<int, dtree_node<T> > nodes_;
 
     int COLUMN_NUMBER;
     int K;
     int LNUM;
 
 
-    int add_node(map<int, dtree_node>& nodes) {
-        int nodes_num = tree_.size() / dtree::VEC_LEN;
+    int add_node(map<int, dtree_node<T> >& nodes) {
+        int nodes_num = dtree<T, RF>::tree_.size() / dtree<T, RF>::VEC_LEN;
         int new_id = nodes_num;
 
-        tree_.push_back(new_id);
-        tree_.push_back(dtree::SPLITTING);
-        tree_.push_back(-1);    // idx
-        tree_.push_back(-1);    // val
-        tree_.push_back(-1);    // left
-        tree_.push_back(-1);    // right
+        dtree<T, RF>::tree_.push_back(new_id);
+        dtree<T, RF>::tree_.push_back(dtree<T, RF>::SPLITTING);
+        dtree<T, RF>::tree_.push_back(-1);    // idx
+        dtree<T, RF>::tree_.push_back(-1);    // val
+        dtree<T, RF>::tree_.push_back(-1);    // left
+        dtree<T, RF>::tree_.push_back(-1);    // right
 
         // and node for this new splitting node
         int indices[K];
         random::get_k_of_n(K, COLUMN_NUMBER, &indices[0]);
 
-        dtree_node root(K, LNUM);
+        dtree_node<T> root(K, LNUM);
         root.set_node_vector_idx(new_id);
         root.start_splitting(indices);
 
-        nodes.insert(pair<int, dtree_node>(new_id, root));
+        nodes.insert(pair<int, dtree_node<T> >(new_id, root));
 
         return new_id;
     }
 
-    bool get_node(const double* x, dtree_node** node) {
-        int nodes_num = tree_.size() / VEC_LEN;
+    bool get_node(const T* x, dtree_node<T>** node) {
+        int nodes_num = dtree<T, RF>::tree_.size() / dtree<T, RF>::VEC_LEN;
         if (!nodes_num) {
             add_node(nodes_);
         }
-//LOG("Root added")
+
         bool result = true;
         int start_idx = 0;
 
         while (true) {
-            double *vec = &tree_[start_idx];
+            RF *vec = &dtree<T, RF>::tree_[start_idx];
 
-            if (dtree::SPLITTING == vec[CLS_IDX]) {
+            if (dtree<T, RF>::SPLITTING == vec[dtree<T, RF>::CLS_IDX]) {
                 // found, get the object
-                map<int, dtree_node>::iterator it = nodes_.find(vec[ID_IDX]);
+                typename map<int, dtree_node<T> >::iterator it = nodes_.find(vec[dtree<T, RF>::ID_IDX]);
                 *node = &it->second;
+//cout << "# FOUND NODE " << vec[dtree<T, RF>::ID_IDX] << endl;
                 break;
             }
-            else if (dtree::LEAF == vec[CLS_IDX]) {
+            else if (dtree<T, RF>::LEAF == vec[dtree<T, RF>::CLS_IDX]) {
                 // nothing to return for learning
                 result = false;
+//cout << "# LEAF " << vec[dtree<T, RF>::ID_IDX] << endl;
                 break;
             }
             else {
                 // go down
-                int idx = (int)vec[IDX_IDX];
-                double val = vec[VAL_IDX];
-                if (x[idx] <= val) {
-                    start_idx = (int)vec[LEFT_IDX] * dtree::VEC_LEN;
+                int idx = (int)vec[dtree<T, RF>::IDX_IDX];
+                RF val = vec[dtree<T, RF>::VAL_IDX];
+
+                if (x[idx] == val) {
+                    start_idx = (int)vec[dtree<T, RF>::LEFT_IDX] * dtree<T, RF>::VEC_LEN;
                 }
                 else {
-                    start_idx = (int)vec[RIGHT_IDX] * dtree::VEC_LEN;
+                    start_idx = (int)vec[dtree<T, RF>::RIGHT_IDX] * dtree<T, RF>::VEC_LEN;
                 }
             }
         }
@@ -1004,51 +591,113 @@ public:
         nodes_.clear();
     }
 
-    void process_fit(const double* x, double y) {
-        dtree_node* node = NULL;
+
+    virtual void tofile(const char* fname) {
+        FILE* fd = fopen(fname, "wb+");
+
+        fwrite(&COLUMN_NUMBER, sizeof(int), 1, fd);
+        fwrite(&K, sizeof(int), 1, fd);
+        fwrite(&LNUM, sizeof(int), 1, fd);
+
+        int size = nodes_.size();
+        fwrite(&size, sizeof(int), 1, fd);
+
+        for (typename map<int, dtree_node<T> >::iterator it = nodes_.begin(); it != nodes_.end(); ++it) {
+            const dtree_node<T>& n = it->second;
+            n.tofile(fd);
+        }
+
+        size = dtree<T, RF>::tree_.size();
+        fwrite(&size, sizeof(int), 1, fd);
+
+        for (int i = 0; i < size; ++i) {
+            fwrite(&dtree<T, RF>::tree_[i], sizeof(RF), 1, fd);
+        }
+
+        fclose(fd);
+    }
+
+    virtual void fromfile(const char* fname) {
+        // reset everything
+        random::seed();
+        nodes_.clear();
+        dtree<T, RF>::tree_.clear();
+
+        // read from file
+        FILE* fd = fopen(fname, "rb");
+
+        fread(&COLUMN_NUMBER, sizeof(int), 1, fd);
+        fread(&K, sizeof(int), 1, fd);
+        fread(&LNUM, sizeof(int), 1, fd);
+
+        int size;
+        fread(&size, sizeof(int), 1, fd);
+
+        for (int i = 0; i < size; ++i) {
+            dtree_node<T> n(K, LNUM);
+            n.fromfile(fd);
+            nodes_.insert(pair<int, dtree_node<T> >(n.get_node_vector_idx(), n));
+        }
+
+        fread(&size, sizeof(int), 1, fd);
+        for (int i = 0; i < size; ++i) {
+            RF tmp;
+            fread(&tmp, sizeof(RF), 1, fd);
+            dtree<T, RF>::tree_.push_back(tmp);
+        }
+
+        fclose(fd);
+    }
+
+    bool process_fit(const T* x, T y) {
+        dtree_node<T>* node = NULL;
         if (get_node(x, &node)) {
             node->process_splitting(x, y);
+            return true;
         }
+        return false;
     }
 
     void stop_splitting() {
-        map<int, dtree_node> new_nodes;
+        map<int, dtree_node<T> > new_nodes;
 
-        for (map<int, dtree_node>::iterator it = nodes_.begin(); it != nodes_.end(); ++it) {
+        for (typename map<int, dtree_node<T> >::iterator it = nodes_.begin(); it != nodes_.end(); ++it) {
             int idx;
-            double val;
+            T val;
             double gain;
 
-            dtree_node& node = it->second;
+            dtree_node<T>& node = it->second;
 
             node.stop_splitting(&idx, &val, &gain);
             if (-1 == idx) {
                 // cannot split, make a leaf
                 int id = it->first;
-                int start_idx = id * dtree::VEC_LEN;
-                double* vec = &tree_[start_idx];
+                int start_idx = id * dtree<T, RF>::VEC_LEN;
+                RF* vec = &dtree<T, RF>::tree_[start_idx];
 
-                vec[CLS_IDX] = dtree::LEAF;
-                vec[DATA_IDX] = node.get_mean();
+                vec[dtree<T, RF>::CLS_IDX] = dtree<T, RF>::LEAF;
+                vec[dtree<T, RF>::DATA_IDX] = node.get_mean();
                 vec[5] = node.get_count();
+
+                // sanity check
+                if (0 == node.get_count())
+                    LOG("# ERROR RF count of samples is zero")
             }
             else {
                 // make an intermediate node
                 int id = it->first;
-                int start_idx = id * dtree::VEC_LEN;
-                double* vec = &tree_[start_idx];
+                int start_idx = id * dtree<T, RF>::VEC_LEN;
+                RF* vec = &dtree<T, RF>::tree_[start_idx];
 
-                vec[CLS_IDX] = dtree::NON_LEAF;
-                vec[IDX_IDX] = idx;
-                vec[VAL_IDX] = val;
+                vec[dtree<T, RF>::CLS_IDX] = dtree<T, RF>::NON_LEAF;
+                vec[dtree<T, RF>::IDX_IDX] = idx;
+                vec[dtree<T, RF>::VAL_IDX] = val;
 
                 int new_left_id = add_node(new_nodes);
                 int new_right_id = add_node(new_nodes);
 
-                //vec[LEFT_IDX] = new_left_id;
-                //vec[RIGHT_IDX] = new_right_id;
-                tree_[start_idx + LEFT_IDX] = new_left_id;
-                tree_[start_idx + RIGHT_IDX] = new_right_id;
+                dtree<T, RF>::tree_[start_idx + dtree<T, RF>::LEFT_IDX] = new_left_id;
+                dtree<T, RF>::tree_[start_idx + dtree<T, RF>::RIGHT_IDX] = new_right_id;
             }
         }
 
@@ -1056,7 +705,7 @@ public:
     }
 
     bool need_splitting() {
-        return nodes_.size();
+        return (0 == dtree<T, RF>::tree_.size()) || nodes_.size();
     }
 };
 
@@ -1072,14 +721,30 @@ public:
 
 
 
+extern "C" {
+    void predict(void* ptree, DATATYPE* x, double* p);
+    void* alloc_tree_learner(int columns, int k, int lnum);
+    void* alloc_tree();
+    void free_tree(void* ptree);
+    void fromfile_tree(void* ptree, const char* fname);
+    void tofile_tree(void* ptree, const char* fname);
+    void print_tree(void* ptree);
+    void start_fit_tree(void* ptree);
+    void fit_tree(void* ptree, DATATYPE* x, DATATYPE y, int* drop_x);
+    void stop_fit_tree(void* ptree);
+    int end_of_splitting(void* ptree);
+};   // END of extern "C"
+
+
+
 void test1() {
 
     cout << "TEST 1" << endl;
 
-    int N = 10;
+    const int N = 10;
     int C = 25;
 
-    double X[] = {
+    DATATYPE X[] = {
         14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 8539971, 9439754, 9445819, 9445824, 9446014, 9448457, 9448467, 9448500, 9448905, 9448941, 9448977, 9449201, 0, 0, 0, 0, 0,
         14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 6666616, 9441179, 9445819, 9445823, 9446012, 9448457, 9448467, 9448500, 9448905, 9448941, 9449042, 9449201, 0, 0, 0, 0, 0,
         14, 10, 21, 0, 6, 11, 600, 12094, 12502, 20410, 21332, 21637, 1801945, 7436606, 9442027, 9445819, 9445823, 9446012, 9448457, 9448467, 9448500, 9448905, 9448941, 9449042, 9449201, 0, 0, 0, 0, 0,
@@ -1092,36 +757,59 @@ void test1() {
         14, 10, 21, 0, 5, 11, 2492, 10755, 12506, 20410, 21332, 21637, 2071596, 9061602, 9439317, 9445818, 9445823, 9446746, 9448457, 9448467, 9448656, 9448908, 9448923, 9449122, 9449181, 0, 0, 0, 0, 0,
     };
     //double Y[] = {0., 1., 1., 1., 1., 1., 1., 1., 1., 1.};
-    double Y[] = {0., 1., 1., 1., 0., 0., 1., 1., 0., 1.};
+    DATATYPE Y[] = {0., 1., 1., 1., 0., 0., 1., 1., 0., 1.};
 
-    dtree_learner t(30, 5, 1);
-    t.start_fit();
+//    dtree_learner t(30, 5, 1);
+//    t.start_fit();
+
+    void* t = alloc_tree_learner(30, 5, 1);
+    start_fit_tree(t);
+
+    int indices[N];
+    for (int i = 0; i < N; ++i)
+        indices[i] = i;
 
     while (true) {
         for (int i = 0; i < N; ++i) {
-            t.process_fit(&X[i*C], Y[i]);
+            int idx = indices[i];
+            if (-1 == idx)
+                continue;
+            //bool res = t.process_fit(&X[idx*C], Y[idx]);
+            int res = 0;
+            fit_tree(t, &X[idx*C], Y[idx], &res);
+            if (res) {
+                indices[i] = -1;
+                LOG("index " << idx << " will be dropped")
+            }
         }
-        t.stop_splitting();
-        if (!t.need_splitting()) {
+        //t.stop_splitting();
+        //if (!t.need_splitting()) {
+        stop_fit_tree(t);
+        if (end_of_splitting(t)) {
             break;
         }
     }
 
-    double* v = &X[0*C];
-    double p = t.predict(v);
+    DATATYPE* v = &X[0*C];
+    //double p = t.predict(v);
+    double p = 0.;
+    predict(t, v, &p);
     LOG("predict(0) == " << p << " vs 0")
 
     v = &X[1*C];
-    p = t.predict(v);
+    //p = t.predict(v);
+    predict(t, v, &p);
     LOG("predict(1) == " << p << " vs 1")
 
     v = &X[6*C];
-    p = t.predict(v);
+    //p = t.predict(v);
+    predict(t, v, &p);
     LOG("predict(6) == " << p << " vs 1")
 
-    t.print();
+    //t.print();
+    print_tree(t);
 
-    t.tofile("c:\\Temp\\rf.b");
+    //t.tofile("rf.b");
 }
 
 
@@ -1135,56 +823,60 @@ int main() {
 }
 
 //
-// C stype interface for Python
+// C type interface for Python
 //
 
 extern "C" {
 
-    void predict(void* ptree, double* x, double* p) {
-        *p = static_cast<dtree*>(ptree)->predict(x);
+    void predict(void* ptree, DATATYPE* x, double* p) {
+        *p = static_cast<dtree<DATATYPE, RFTYPE>*>(ptree)->predict(x, 0);
     }
 
     void* alloc_tree_learner(int columns, int k, int lnum) {
-        return new dtree_learner(columns, k, lnum);
+        return new dtree_learner<DATATYPE, RFTYPE>(columns, k, lnum);
     }
 
     void* alloc_tree() {
-        return new dtree();
+        return new dtree<DATATYPE, RFTYPE>();
     }
 
     void free_tree(void* ptree) {
-        delete (dtree*)ptree;
+        delete (dtree<DATATYPE, RFTYPE>*)ptree;
     }
 
     void fromfile_tree(void* ptree, const char* fname) {
-        static_cast<dtree*>(ptree)->fromfile(fname);
+        static_cast<dtree<DATATYPE, RFTYPE>*>(ptree)->fromfile(fname);
     }
 
     void tofile_tree(void* ptree, const char* fname) {
-        static_cast<dtree*>(ptree)->tofile(fname);
+        static_cast<dtree<DATATYPE, RFTYPE>*>(ptree)->tofile(fname);
     }
 
     void print_tree(void* ptree) {
-        static_cast<dtree*>(ptree)->print();
+        static_cast<dtree<DATATYPE, RFTYPE>*>(ptree)->print();
     }
 
     void start_fit_tree(void* ptree) {
-        static_cast<dtree_learner*>(ptree)->start_fit();
+        static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->start_fit();
     }
 
-    void fit_tree(void* ptree, double* x, double y) {
-        static_cast<dtree_learner*>(ptree)->process_fit(x, y);
+    void fit_tree(void* ptree, DATATYPE* x, DATATYPE y, int* drop_x) {
+        //*drop_x =  (int)(false == static_cast<dtree_learner*>(ptree)->process_fit(x, y));
+        bool res = static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->process_fit(x, y);
+        *drop_x = (int)(false == res);
     }
 
     void stop_fit_tree(void* ptree) {
-        static_cast<dtree_learner*>(ptree)->stop_splitting();
+        static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->stop_splitting();
     }
 
     int end_of_splitting(void* ptree) {
-        return (int)(false == static_cast<dtree_learner*>(ptree)->need_splitting());
+        return (int)(false == static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->need_splitting());
     }
 
 };   // END of extern "C"
+
+
 
 
 

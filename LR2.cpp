@@ -6,6 +6,7 @@
 #include <ctime>
 #include <iostream>
 #include <iomanip>
+#include <unistd.h>
 
 using namespace std;
 
@@ -19,7 +20,7 @@ const int VEC_LEN_BYTES = VEC_LEN * sizeof(float);
 
 const int COLUMNS = VEC_LEN;    // including zero term
 
-const double l = .16;
+const double l = .5;
 
 
 //
@@ -115,10 +116,10 @@ void mul_and_add(double scalar, const double* v, double* r, int size) {
 ///////////////////////////////////////////////////////////////////////
 
 double sigmoid(double x) {
-    //x = x <= 50 ? (x >= -50 ? x : -50) : 50;
-    //return 1. / (1. + ::exp(-x));
+    x = x <= 50 ? (x >= -50 ? x : -50) : 50;
+    return 1. / (1. + ::exp(-x));
 
-    double l = .5;
+    double l = 1.;
 
     double r = 1. / (1. + ::exp(-x * l));
     if (r == 1.)
@@ -144,7 +145,9 @@ double logistic_cost(const double* theta, const double* x, double* grad_x, doubl
     double h = logistic_h(theta, x, columns);
 
     // calc cost part
-    double cost = y * ::log(h) + (1. - y) * ::log(1. - h);
+    double p1 = h > 0. ? h : 0.0000000001;
+    double p2 = (1. - h) > 0. ? (1. - h) : 0.0000000001;
+    double cost = y * ::log(p1) + (1. - y) * ::log(p2);
 
     // calc gradient part
     double delta = h - y;
@@ -164,6 +167,8 @@ const ULONG ALLIGN = 512;
 const int BUFFER_LEN_BYTES = 120000000;
 char buffer[ALLIGN + BUFFER_LEN_BYTES];
 char* p = buffer;
+
+const int N = 200;
 
 const int FILES_NUM = 14;
 //const int FILES_NUM = 1;
@@ -210,6 +215,13 @@ double read_file(FILE* fd, const double* theta, double* grad, int columns, int* 
         for (int i = 0; i < VEC_LEN; ++i)
             x[i] = (double)vectors[idx + i];
 
+        x[1] = sqrt(x[1]);
+        x[4] = sqrt(x[4]);
+        x[7] = sqrt(x[7]);
+        //x[4] = ;
+        //x[5] = ;
+        //x[6] = ;
+
         double y = x[0];
         x[0] = 1.;  // zero term
 
@@ -217,6 +229,8 @@ double read_file(FILE* fd, const double* theta, double* grad, int columns, int* 
     }
 
     *M = vectors_num;
+
+    //usleep(1);
 
     return E;
 }
@@ -246,7 +260,8 @@ double cost(const double* theta, double* grad, int columns, int* M) {
     for (int i = 0; i < columns; ++i) {
         grad[i] /= *M;
 
-        reg += theta[i] * theta[i];
+        if (i > 0)
+            reg += theta[i] * theta[i];
     }
 
     reg *= l/(*M * 2.);
@@ -308,6 +323,7 @@ static void minimize_gc(double* theta, int columns, FUNC func, int max_iteration
 
         if (cost <= new_cost) {
             a -= a / 5.;
+            //a /= 2.;
             // restore theta
             for (int i = 0; i < columns; ++i) {
                 theta[i] = local_theta[i];
@@ -349,17 +365,22 @@ int main() {
 
     random::seed();
 
-    double theta[COLUMNS];
-    random::rand(theta, COLUMNS);
+    int columns = COLUMNS;
+    //int columns = 4;
+
+    //double theta[columns];
+    //random::rand(theta, columns);
+    // Theta for cost 0.3819295622215437
+    double theta[10] = { -6.621295529420721,   4.174826949593883,  -5.397414750887257,   4.107372047196714,   4.554937421642614,   -5.76491522658397,   4.391173394717607,   4.450525199056153,  -5.737414862957012,   4.378752054066173, };
     cout << "# init theta: " << theta[0] << ", " << theta[1] << ", " << theta[2] << "..." << endl;
 
 
-    minimize_gc(theta, COLUMNS, cost, 2000);
+    minimize_gc(theta, columns, cost, N);
 
     // print the result
     cout << "// Theta for LogReg" << endl;
-    cout << "double theta[" << COLUMNS << "] = {";
-    for (int i = 0; i < COLUMNS; ++i) {
+    cout << "double theta[" << columns << "] = {";
+    for (int i = 0; i < columns; ++i) {
         cout << std::setw(19) << std::setprecision(16) << theta[i] << ", ";
     }
     cout << "};" << endl;
@@ -368,6 +389,3 @@ int main() {
 }
 
 
-// Theta for cost 0.3865027126542055
-double theta[10] = { -5.886211663047599,    4.12690925299451,  0.9200623141887178,  0.2264538393126736,   4.222240390696638,  0.6493591810302141,  0.6791632719424638,    4.01674647595534,  0.7951080803614569,  0.6784780161005307, };
-# iteration                  77 cost 0.3865027126542055

@@ -5,7 +5,7 @@ from array import array
 import pathes
 
 
-VEC_LEN = 10
+VEC_LEN = 8
 VECTORS_PER_FILE = 3000000
 
 
@@ -13,9 +13,13 @@ fname = pathes.path_train + "train.csv.b"
 
 fin = open(fname, "rb")
 files = [
-    open(pathes.path_lr_data + "ent_90_6_51_1.b_train.txt", "r"),
     open(pathes.path_lr_data + "ent_90_6_51_0(1).b_train.txt", "r"),
+    open(pathes.path_lr_data + "ent_90_6_51_0.b_train.txt", "r"),
+    open(pathes.path_lr_data + "ent_90_6_51_1(1).b_train.txt", "r"),
+    open(pathes.path_lr_data + "ent_90_6_51_1.b_train.txt", "r"),
+    open(pathes.path_lr_data + "ent_90_6_51_2(1).b_train.txt", "r"),
     open(pathes.path_lr_data + "ent_90_6_51_2.b_train.txt", "r"),
+    open(pathes.path_lr_data + "log_90_8_51_2(11).b_train.txt", "r"),
 ]
 
 fname_out_pref = pathes.path_lr_data + "lr_train.b"
@@ -47,10 +51,6 @@ def main():
 
                 val = float(line)
                 vec[idx] = val
-                idx += 1
-                vec[idx] = val ** 2
-                idx += 1
-                vec[idx] = val ** 3
                 idx += 1
 
             vec.tofile(fout)

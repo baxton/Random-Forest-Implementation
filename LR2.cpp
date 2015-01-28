@@ -7,20 +7,25 @@
 #include <iostream>
 #include <iomanip>
 #include <unistd.h>
+#include <algorithm>
 
 using namespace std;
+
+#define QUICK
 
 typedef unsigned long long ULONG;       // I have to care about sizes as I'm on 32 bit system
 
 // vector format
-// click,  v1, v1**2, v1**3,  v2, v2**2, v2**3,  v3, v3**2, v3**3
+// click,  v1, v2, v3, v4, v5, v6, v7
 //
-const int VEC_LEN = 10;
+const int VEC_LEN = 8;
 const int VEC_LEN_BYTES = VEC_LEN * sizeof(float);
 
 const int COLUMNS = VEC_LEN;    // including zero term
+//int g_columns = VEC_LEN + 7 * 3; //COLUMNS;
+int g_columns = COLUMNS;
 
-const double l = .5;
+const double l = 0.;
 
 
 //
@@ -118,16 +123,6 @@ void mul_and_add(double scalar, const double* v, double* r, int size) {
 double sigmoid(double x) {
     x = x <= 50 ? (x >= -50 ? x : -50) : 50;
     return 1. / (1. + ::exp(-x));
-
-    double l = 1.;
-
-    double r = 1. / (1. + ::exp(-x * l));
-    if (r == 1.)
-        r = .999999999;
-    else if (r == 0.)
-        r = .000000001;
-
-    return r;
 }
 
 double logistic_h(const double* theta, const double* x, int columns) {
@@ -147,11 +142,13 @@ double logistic_cost(const double* theta, const double* x, double* grad_x, doubl
     // calc cost part
     double p1 = h > 0. ? h : 0.0000000001;
     double p2 = (1. - h) > 0. ? (1. - h) : 0.0000000001;
-    double cost = y * ::log(p1) + (1. - y) * ::log(p2);
+    double cost = -1 * (y * ::log(p1) + (1. - y) * ::log(p2));
 
     // calc gradient part
-    double delta = h - y;
-    mul_and_add(delta, x, grad_x, columns);
+    if (grad_x) {
+        double delta = h - y;
+        mul_and_add(delta, x, grad_x, columns);
+    }
 
     return cost;
 }
@@ -168,10 +165,27 @@ const int BUFFER_LEN_BYTES = 120000000;
 char buffer[ALLIGN + BUFFER_LEN_BYTES];
 char* p = buffer;
 
-const int N = 200;
+const int CV_SIZE = 8000000;
+const int CV_NUM = CV_SIZE / 4;
 
-const int FILES_NUM = 14;
-//const int FILES_NUM = 1;
+#if defined QUICK
+    const int CROSS_VAL_NUM = CV_NUM;
+#else
+    const int CROSS_VAL_NUM = CV_NUM;
+#endif
+int cross_val_ids[CROSS_VAL_NUM];
+double cross_val_E = 0.;
+double cross_val_SME = 0.;
+int cur_cross_idx = 0;
+
+const int N = 100;
+
+#if defined QUICK
+    const int FILES_NUM = 2;
+#else
+    const int FILES_NUM = 14;
+#endif
+
 FILE* fds[FILES_NUM];
 const char* file_names[/*FILES_NUM*/] = {
 "C:\\Temp\\kaggle\\CTR\\data\\lr_train\\lr_train.b.0",
@@ -194,7 +208,7 @@ const char* file_names[/*FILES_NUM*/] = {
 //
 // problem specific - it knows about files and vector's format
 //
-double read_file(FILE* fd, const double* theta, double* grad, int columns, int* M) {
+double read_file(FILE* fd, const double* theta, double* grad, int columns, int* M, int* cur_id) {
     double E = 0.;
 
     fseek(fd, 0, SEEK_END);
@@ -206,26 +220,49 @@ double read_file(FILE* fd, const double* theta, double* grad, int columns, int* 
     float* vectors = (float*)p;
     int vectors_num = size / VEC_LEN_BYTES;
 
-    double x[VEC_LEN];
+    //double x[VEC_LEN];
+    double x[VEC_LEN + 7 * 3];
+
+    //g_columns = VEC_LEN + 7 * 3;
 
     for (int v = 0; v < vectors_num; ++v) {
         int idx = v * VEC_LEN;
 
         // convert to double from float
-        for (int i = 0; i < VEC_LEN; ++i)
+        for (int i = 0; i < VEC_LEN; ++i) {
             x[i] = (double)vectors[idx + i];
+            x[i] = x[i] > 0 ? log(x[i]) : 0;
+        }
 
-        x[1] = sqrt(x[1]);
-        x[4] = sqrt(x[4]);
-        x[7] = sqrt(x[7]);
-        //x[4] = ;
-        //x[5] = ;
-        //x[6] = ;
+//        x[3] = x[4] ? x[3] / x[4] : .0;
+//        x[4] = x[5] ? x[4] / x[5] : .0;
+//        x[5] = x[6] ? x[5] / x[6] : .0;
+//        x[6] = x[7] ? x[6] / x[7] : .0;
 
+/*
+        for (int i = 0; i < VEC_LEN-1; ++i) {
+            int j = i + 1;
+            x[VEC_LEN + i*3+0] = x[j] * x[j];
+            x[VEC_LEN + i*3+1] = x[j] * x[j] * x[j];
+            x[VEC_LEN + i*3+2] = x[j] * x[j] * x[j] * x[j];
+
+            //x[j] = sqrt(x[j]);
+        }
+*/
         double y = x[0];
         x[0] = 1.;  // zero term
 
-        E += logistic_cost(theta, x, grad, y, columns);
+        if (*cur_id == cross_val_ids[cur_cross_idx]) {
+//cout << "# CV id: " << cross_val_ids[cur_cross_idx] << endl;
+            ++cur_cross_idx;
+            cross_val_E += logistic_cost(theta, x, NULL, y, columns);
+        }
+        else {
+            E += logistic_cost(theta, x, grad, y, columns);
+        }
+
+        // set next cur ID
+        *cur_id += 1;
     }
 
     *M = vectors_num;
@@ -248,25 +285,32 @@ double cost(const double* theta, double* grad, int columns, int* M) {
 
     *M = 0;
 
+
+
+    // start checking for ID is for cross varsalidation from the begining
+    cur_cross_idx = 0;
+    cross_val_E = 0.;
+
+    // start counting current varsector ID
+    int cur_id = 0;
+
     // go throuh the entire train set
     for (int f = 0; f < FILES_NUM; ++f) {
         int tmp;
-        E += read_file(fds[f], theta, grad, columns, &tmp);
+        E += read_file(fds[f], theta, grad, columns, &tmp, &cur_id);
         *M += tmp;
     }
 
+    // calc grad and apply regularization
     double reg = 0.;
-
-    for (int i = 0; i < columns; ++i) {
-        grad[i] /= *M;
-
-        if (i > 0)
-            reg += theta[i] * theta[i];
+    grad[0] /= *M;
+    for (int i = 1; i < columns; ++i) {
+        grad[i] = (grad[i] + l * theta[i]) / *M;
+        reg += theta[i] * theta[i];
     }
-
     reg *= l/(*M * 2.);
 
-    return -1 * E / *M + reg;
+    return E / *M + reg;
 }
 
 
@@ -314,9 +358,8 @@ static void minimize_gc(double* theta, int columns, FUNC func, int max_iteration
         }
 
         // update theta
-        theta[0] = theta[0] - a * grad[0];
-        for (int i = 1; i < columns; ++i) {
-            theta[i] = theta[i] - a * (grad[i] + l * theta[i] / M);
+        for (int i = 0; i < columns; ++i) {
+            theta[i] = theta[i] - a * grad[i];
         }
 
         double new_cost = func(theta, grad, columns, &M);
@@ -336,8 +379,12 @@ static void minimize_gc(double* theta, int columns, FUNC func, int max_iteration
 
 //          cout << "# theta: " << theta[0] << ", " << theta[1] << ", " << theta[2] << "..." << endl;
             cout << "# alpha " << a << " grad: " << grad[0] << ", " << grad[1] << ", " << grad[2] << "..." << endl;
+            cout << "# CV " << (cross_val_E / M) << endl;   // intermediate val
             print_theta(theta, columns, cost);
             cout << "# iteration " << std::setw(19) << std::setprecision(16) << cur_iter << " cost " << cost << endl;
+
+            if (cur_cross_idx < 10000)
+                cout << "# ERROR CV idx " << cur_cross_idx << endl;
         }
     }
 
@@ -365,22 +412,40 @@ int main() {
 
     random::seed();
 
-    int columns = COLUMNS;
-    //int columns = 4;
+    // prepare CV ids
+#if defined QUICK
+    const int LINES_IN_TRAIN = 6000000;
+#else
+    const int LINES_IN_TRAIN = 40428967;
+#endif
 
-    //double theta[columns];
-    //random::rand(theta, columns);
-    // Theta for cost 0.3819295622215437
-    double theta[10] = { -6.621295529420721,   4.174826949593883,  -5.397414750887257,   4.107372047196714,   4.554937421642614,   -5.76491522658397,   4.391173394717607,   4.450525199056153,  -5.737414862957012,   4.378752054066173, };
+    //random::get_k_of_n(CROSS_VAL_NUM, LINES_IN_TRAIN, &cross_val_ids[0]);
+    //std::sort(&cross_val_ids[0], &cross_val_ids[CROSS_VAL_NUM]);
+    FILE* fcv = fopen("C:\\Temp\\kaggle\\CTR\\cv_click_ids.b", "rb");
+    fread(&cross_val_ids[0], CV_SIZE, 1, fcv);
+    fclose(fcv);
+
+    //
+
+    //double theta[g_columns];
+    //random::rand(theta, g_columns);
+    //
+    double theta[29] = { -3.939460551955113,   4.562200696553635,  -3.664489109755185,   4.817769544714159,
+                         4.723329792925568,  -4.033096586970479,   5.062432897824738,   3.497314841928399,
+                         -5.615707359460818,   4.497059200803301,    1.09288393935726, -0.9097795785900078,
+                         1.039575005126297,   1.536249626306091,  -1.726144771705812,  0.4279856438712299,
+                         1.047898864907344,   -1.73849936354751,  0.4262981091067785,    1.04993014379362,
+                         -0.9129812686187934,   1.034680164095185,   1.530510194297934,  -1.749494984907827,
+                         0.4153619858817644,   1.040346151469149,  -1.936188631239613,  0.4751589971718277,   1.129217198720281, };
     cout << "# init theta: " << theta[0] << ", " << theta[1] << ", " << theta[2] << "..." << endl;
 
 
-    minimize_gc(theta, columns, cost, N);
+    minimize_gc(theta, g_columns, cost, N);
 
     // print the result
-    cout << "// Theta for LogReg" << endl;
-    cout << "double theta[" << columns << "] = {";
-    for (int i = 0; i < columns; ++i) {
+    cout << "// Theta for LogReg, CV " << cross_val_E << endl;
+    cout << "double theta[" << g_columns << "] = {";
+    for (int i = 0; i < g_columns; ++i) {
         cout << std::setw(19) << std::setprecision(16) << theta[i] << ", ";
     }
     cout << "};" << endl;

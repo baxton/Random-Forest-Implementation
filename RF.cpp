@@ -31,6 +31,9 @@ typedef float RFTYPE;
 #define ALIGNMENT  __attribute__((aligned(16))
 
 
+const int MAX_ACTIVES = 8;
+int ACTIVES_NUM = MAX_ACTIVES;
+
 
 //
 // data
@@ -165,7 +168,7 @@ public:
     bool get_active() const {return active_;}
 
     void fill_vals(std::map<T, data<T> >& m, int idx) {
-        double N = 50;
+        double N = 100;
         double step = 1. / (N - 1);
         double val = 0.;
 
@@ -514,22 +517,24 @@ public:
         nodes_.clear();
     }
 
-    bool process_fit(const T* x, T y) {
+    int process_fit(const T* x, T y) {
+        const int DROP_X = 0;
+        const int ACTIVE_X = 1;
+        const int NON_ACTIVE_X = 2;
+
         dtree_node<T>* node = NULL;
         if (get_node(x, &node)) {
             if (node->get_active()) {
                 node->process_splitting(x, y);
+                return ACTIVE_X;
             }
-            return true;
+            return NON_ACTIVE_X;
         }
-        return false;
+        return DROP_X;
     }
 
-    void stop_splitting() {
+    void stop_splitting(int do_not_re_activate) {
         map<int, dtree_node<T> > new_nodes;
-
-        int non_actives_to_release = 0;
-        int non_active = 0;
 
         for (typename map<int, dtree_node<T> >::iterator it = nodes_.begin(); it != nodes_.end(); ++it) {
 
@@ -549,14 +554,11 @@ public:
                     vec[dtree<T, RF>::VAL_IDX] = -2;
                     vec[dtree<T, RF>::LEFT_IDX] = -2;
                     vec[dtree<T, RF>::DATA_IDX] = node.get_mean();
-                    vec[5] = node.get_count();
+                    vec[dtree<T, RF>::CNT_IDX] = node.get_count();
 
                     // sanity check
                     if (0 == node.get_count())
                         LOG("# ERROR RF count of samples is zero")
-
-                    // release one non-active node
-                    ++non_actives_to_release;
                 }
                 else {
                     // make an intermediate node
@@ -568,9 +570,7 @@ public:
                     vec[dtree<T, RF>::VAL_IDX] = val;
 
                     int new_left_id = add_node(new_nodes, true);
-
-                    int new_right_id = add_node(new_nodes, false);
-                    ++non_active;
+                    int new_right_id = add_node(new_nodes, true);
 
                     dtree<T, RF>::tree_[start_idx + dtree<T, RF>::LEFT_IDX] = new_left_id;
                     dtree<T, RF>::tree_[start_idx + dtree<T, RF>::RIGHT_IDX] = new_right_id;
@@ -579,23 +579,50 @@ public:
             else {
                 // transfer non-active to the new collection
                 new_nodes.insert(pair<int, dtree_node<T> >(it->first, node));
-                ++non_active;
             }
         }
 
         nodes_.swap(new_nodes);
 
-        // release non-active
-        for (typename map<int, dtree_node<T> >::iterator it = nodes_.begin(); it != nodes_.end() && non_actives_to_release; ++it) {
-            dtree_node<T>& node = it->second;
-            if (!node.get_active()) {
-                node.set_active(true);
-                --non_active;
-                --non_actives_to_release;
+        if (0 == do_not_re_activate) {
+            if (16384 <= nodes_.size()) {
+                ACTIVES_NUM = 1;
             }
+            else if (8192 <= nodes_.size()) {
+                if (nodes_.size() > new_nodes.size()) {     // and number didnt drop
+                    ACTIVES_NUM /= 2;
+                }
+            }
+            else {
+                ACTIVES_NUM *= 2;
+                if (MAX_ACTIVES < ACTIVES_NUM)
+                    ACTIVES_NUM = MAX_ACTIVES;
+            }
+            int non_active = 0;
+            int num_of_active_nodes = 0;
+            int nodes_to_deactivate = nodes_.size() > ACTIVES_NUM ? nodes_.size() - ACTIVES_NUM : 0;
+            for (typename map<int, dtree_node<T> >::reverse_iterator it = nodes_.rbegin(); it != nodes_.rend(); ++it) {
+                dtree_node<T>& node = it->second;
+                if (nodes_to_deactivate) {
+                    node.set_active(false);
+                    --nodes_to_deactivate;
+                    ++non_active;
+                }
+                else {
+                    node.set_active(true);
+                    ++num_of_active_nodes;
+                }
+            }
+            if (!num_of_active_nodes && nodes_.size()) {
+                // just in case
+                dtree_node<T>& node = nodes_.begin()->second;
+                node.set_active(true);
+            }
+            cout << "# processed nodes: " << (dtree<T, RF>::tree_.size() / dtree<T, RF>::VEC_LEN) << "; pending: " << nodes_.size() << "; non-active: " << non_active << "; active: " << num_of_active_nodes << endl;
         }
-
-        cout << "# processed nodes: " << (dtree<T, RF>::tree_.size() / dtree<T, RF>::VEC_LEN) << "; pending: " << nodes_.size() << "; non-active: " << non_active << endl;
+        else {
+            cout << "# no reactivation" << endl;
+        }
     }
 
     bool need_splitting() {
@@ -662,12 +689,12 @@ extern "C" {
     }
 
     void fit_tree(void* ptree, DATATYPE* x, DATATYPE y, int* drop_x) {
-        bool res = static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->process_fit(x, y);
-        *drop_x = (int)(false == res);
+        int res = static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->process_fit(x, y);
+        *drop_x = res;
     }
 
-    void stop_fit_tree(void* ptree) {
-        static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->stop_splitting();
+    void stop_fit_tree(void* ptree, int do_not_re_activate) {
+        static_cast<dtree_learner<DATATYPE, RFTYPE>*>(ptree)->stop_splitting(do_not_re_activate);
     }
 
     int end_of_splitting(void* ptree) {
@@ -675,6 +702,7 @@ extern "C" {
     }
 
 };   // END of extern "C"
+
 
 
 

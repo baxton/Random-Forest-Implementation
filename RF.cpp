@@ -31,7 +31,7 @@ typedef float RFTYPE;
 #define ALIGNMENT  __attribute__((aligned(16))
 
 
-const int MAX_ACTIVES = 8;
+const int MAX_ACTIVES = 4;
 int ACTIVES_NUM = MAX_ACTIVES;
 
 

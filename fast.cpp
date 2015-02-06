@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <algorithm>
 #include <unistd.h>
+#include <iomanip>
 
 using namespace std;
 
@@ -56,18 +57,18 @@ vector<bool> bootstraps_inclusion[TREES]; //[LINES_IN_BS];
 
 
 
-//const int FILES_NUM = 14;
-const int FILES_NUM = 6;
+const int FILES_NUM = 14;
+//const int FILES_NUM = 7;
 FILE* fds[FILES_NUM];
 const char* files[/*FILES_NUM*/] = {
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.0",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.1",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.2",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.3",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.4",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.5",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.6",
-//"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.7",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.0",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.1",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.2",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.3",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.4",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.5",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.6",
+"C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.7",
 "C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.8",
 "C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.9",
 "C:\\Temp\\kaggle\\CTR\\rf\\rf_train\\rf_train.b.10",
@@ -85,9 +86,10 @@ const int FINISH_SWITCH = 2;
 int finish_out = FINISH_NO;
 
 int number_of_active = 0;
-const int EXP_VECTORS_NUM = 2500000;
-const int EXP_VEC_LEN = 1 + VEC_LEN;
+const int EXP_VECTORS_NUM = 2600000;
+const int EXP_VEC_LEN = VEC_LEN;
 const int EXP_BUF_SIZE = EXP_VEC_LEN * EXP_VECTORS_NUM;
+int exp_ids[EXP_VECTORS_NUM];
 float exp_buffer[EXP_BUF_SIZE];
 int exp_idx = 0;
 int exp_vectors_num = 0;
@@ -179,6 +181,8 @@ void process_file(FILE* fd, char* p, void(*func)(DATATYPE*,int, int*), int* ID) 
     fseek(fd, 0, SEEK_SET);
 
     size_t ret = fread(p, size, 1, fd);
+
+    //usleep(3);
 
     func((DATATYPE*)p, size / VEC_LEN_BYTES, ID);
 }
@@ -360,9 +364,13 @@ void process(DATATYPE* matrix, int rows, int* ID) {
                 ++number_of_active; // unique IDs only
 
                 if (FINISH_YES == finish_out) {
-                    exp_buffer[exp_idx + 0] = *ID;
+                    if (number_of_active > EXP_VECTORS_NUM)
+                        finish_out = FINISH_NO;
+
+                    ///cout << "# ID for fast " << *ID << " row index " << (exp_idx / EXP_VEC_LEN) << endl;
+                    exp_ids[exp_idx/EXP_VEC_LEN] = *ID;
                     for (int i = 0; i < VEC_LEN; ++i)
-                        exp_buffer[exp_idx + 1 + i] = vec[idx+i];
+                        exp_buffer[exp_idx+i] = vec[idx+i];
                     exp_idx += EXP_VEC_LEN;
                     ++exp_vectors_num;
                 }
@@ -378,15 +386,41 @@ void finish() {
 
         int dropped_vectors = 0;
 
+        int non_active_num = 0;
+        int actives_num = 0;
+
         for (int r = 0; r < exp_vectors_num; ++r) {
             int idx = r * EXP_VEC_LEN;
 
-            int ID = exp_buffer[idx+0];
+            int ID = exp_ids[r];
+
+
 
             for (int t = 0; t < TREES; ++t) {
                 int bs_idx = -1;
-                if (!index_in_vec(&bootstraps[t][0], &bootstraps[t][LINES_IN_BS], ID, bs_idx))
+                if (!index_in_vec(&bootstraps[t][0], &bootstraps[t][LINES_IN_BS], ID, bs_idx)) {
+                /*
+                    cout << "# ERROR not for finish " << ID << " row index " << r << endl;
+
+                    for (int i = 0; i < EXP_VEC_LEN; ++i)
+                        cout << setprecision(16) << exp_buffer[idx-EXP_VEC_LEN+i] << ", ";
+                    cout << endl;
+                    for (int i = 0; i < EXP_VEC_LEN; ++i)
+                        cout << setprecision(16) << exp_buffer[idx+i] << ", ";
+                    cout << endl;
+                    for (int i = 0; i < EXP_VEC_LEN; ++i)
+                        cout << setprecision(16) << exp_buffer[idx+EXP_VEC_LEN+i] << ", ";
+                    cout << endl;
+
+                    cout << "# bootstrap: " << endl;
+                    for (int i = 0; i < LINES_IN_BS; ++i) {
+                        cout << bootstraps[t][i] << "\n";
+                    }
+                    cout << endl;
+                    abort();
+                */
                     continue;
+                }
 
                 if (0 == bootstraps_inclusion[t][bs_idx]) {
                     ++dropped_vectors;
@@ -400,7 +434,7 @@ void finish() {
 
                 int drop_x = ACTIVE_X;
                 while (bootstraps[t][bs_idx] == ID && (DROP_X != drop_x)) {
-                    fit_tree(hLearners[t], &exp_buffer[idx+2], exp_buffer[idx+1], &drop_x);
+                    fit_tree(hLearners[t], &exp_buffer[idx+1], exp_buffer[idx], &drop_x);
                     if (DROP_X != drop_x)
                         ++bs_idx;
                 }
@@ -409,10 +443,16 @@ void finish() {
                     bootstraps_inclusion[t][bs_idx] = 0;
                     ++dropped_vectors;
                 }
+                else if (ACTIVE_X == drop_x) {
+                    ++actives_num;
+                }
+                else if (NON_ACTIVE_X == drop_x) {
+                    ++non_active_num;
+                }
             }
         }
 
-        cout << "# vectors to drop " << exp_vectors_num << "; curently dropped " << dropped_vectors << endl;
+        cout << "# vectors to drop " << exp_vectors_num << "; curently dropped " << dropped_vectors << "; actives " << actives_num << "; non actives " << non_active_num << endl;
 
         for (int t = 0; t < TREES; ++t) {
             stop_fit_tree(hLearners[t], true);
